@@ -42,10 +42,18 @@ class ChibiClipGenerator:
 
     # Step 3: Prompt generator
     def generate_ai_prompt(self, action="running"):
-        base = ("Charming vector illustration of a chibi‑style dog with flat pastel colors, "
-                "bold black outlines, subtle cel‑shading and soft shadows, centered on a clean "
-                "light‑beige background with a faint oval ground shadow, minimalistic and playful.")
-        prompt = f"{base} The dog is {action} in place."
+        if action == "birthday-dance":
+            base = ("Charming vector illustration of a chibi‑style dog with flat pastel colors, "
+                    "bold black outlines, subtle cel‑shading and soft shadows, centered on a clean "
+                    "light‑beige background with a faint oval ground shadow, minimalistic and playful. "
+                    "The dog is wearing a colorful party hat and has a happy celebratory expression.")
+            prompt = f"{base} The dog is dancing joyfully for a birthday celebration."
+        else:
+            base = ("Charming vector illustration of a chibi‑style dog with flat pastel colors, "
+                    "bold black outlines, subtle cel‑shading and soft shadows, centered on a clean "
+                    "light‑beige background with a faint oval ground shadow, minimalistic and playful.")
+            prompt = f"{base} The dog is {action} in place."
+        
         if self.verbose:
             print(f"Generated AI prompt for OpenAI: '{prompt}'")
         return prompt
@@ -134,15 +142,24 @@ class ChibiClipGenerator:
 
         headers = {
             "Authorization": f"Bearer {self.runway_api_key}",
-            "X-Runway-Version": "2024-11-06", # As specified
+            "X-Runway-Version": "2024-11-06",
             "Content-Type": "application/json",
         }
+        
+        # Customize the prompt text based on the action
+        if action == "birthday-dance":
+            prompt_text = ("Seamless looped 2D animation of a chibi‑style puppy dancing happily with a birthday hat — "
+                          "smooth, bouncy dance movements, joyful expression, flat pastel colours, "
+                          "bold black outlines, subtle cel‑shading, clean light‑beige background, confetti falling, no cuts.")
+        else:
+            prompt_text = (f"Seamless looped 2D animation of a chibi‑style puppy {action} in place — "
+                           "flat pastel colours, bold black outlines, smooth limb and ear motion, "
+                           "subtle cel‑shading, clean light‑beige background, no cuts.")
+        
         payload = {
             "promptImage": img_url,
-            "model":       "gen4_turbo", # As specified
-            "promptText": (f"Seamless looped 2D animation of a chibi‑style puppy {action} in place — "
-                           "flat pastel colours, bold black outlines, smooth limb and ear motion, "
-                           "subtle cel‑shading, clean light‑beige background, no cuts."),
+            "model":       "gen4_turbo",
+            "promptText":  prompt_text,
             "duration":    duration,
             "ratio":       RATIO_MAP[ratio],
         }
@@ -313,7 +330,8 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="ChibiClip Generator: Create animated video clips from photos.")
     ap.add_argument("photo", help="Path to the input photo of the dog.")
-    ap.add_argument("--action", default="running", choices=["running", "tail-wagging", "jumping"], 
+    ap.add_argument("--action", default="running", 
+                    choices=["running", "tail-wagging", "jumping", "birthday-dance"], 
                     help="Action the dog should perform in the animation.")
     ap.add_argument("--ratio", default="9:16", choices=["9:16", "16:9", "1:1"],
                     help="Aspect ratio for the output video.")

@@ -73,3 +73,7 @@ npm-debug.log*
 test_*.py
 *_test_files/ google-credentials.json
 google-credentials.json
+
+# Node.js
+node_modules/
+.next/

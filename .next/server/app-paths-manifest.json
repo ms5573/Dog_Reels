@@ -1,5 +1,0 @@
-{
-  "/api/upload/route": "app/api/upload/route.js",
-  "/api/status/[id]/route": "app/api/status/[id]/route.js",
-  "/page": "app/page.js"
-}

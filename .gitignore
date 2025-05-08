@@ -4,6 +4,9 @@
 .env.*
 !.env.example
 
+# Output directory
+Output/
+
 # Python
 __pycache__/
 *.py[cod]

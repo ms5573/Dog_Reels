@@ -12,6 +12,16 @@ RATIO_MAP = {
     "16:9": "1280:720",
     "1:1":  "960:960"  # fallback square
 }
+
+# Define image size mapping for OpenAI based on video ratios
+# OpenAI supports: 1024x1024, 1024x1536, 1536x1024, and auto
+# Let's map our video ratios to the closest OpenAI supported dimensions
+IMAGE_SIZE_MAP = {
+    "9:16": "1024x1536",   # portrait/vertical
+    "16:9": "1536x1024",   # landscape
+    "1:1":  "1024x1024"    # square
+}
+
 DUR_ALLOWED = (5, 10)
 
 class ChibiClipGenerator:
@@ -40,18 +50,29 @@ class ChibiClipGenerator:
             print(f"Generated AI prompt for OpenAI: '{prompt}'")
         return prompt
 
-    # Step 4: OpenAI image-editing wrapper (unchanged from your original script)
-    def edit_image_with_openai(self, image_content: BytesIO, prompt: str) -> str:
+    # Step 4: OpenAI image-editing wrapper (updated to support dimensions)
+    def edit_image_with_openai(self, image_content: BytesIO, prompt: str, image_size: str = "1024x1024") -> str:
         if self.verbose:
-            print(f"Editing image with OpenAI using prompt: \"{prompt}\"")
+            print(f"Editing image with OpenAI using prompt: \"{prompt}\" with size {image_size}")
+        
+        # Validate image_size is supported by OpenAI
+        valid_sizes = ["1024x1024", "1024x1536", "1536x1024", "auto"]
+        if image_size not in valid_sizes:
+            if self.verbose:
+                print(f"Warning: Image size {image_size} not supported by OpenAI. Defaulting to 1024x1024.")
+            image_size = "1024x1024"
+        
         headers = {
             "Authorization": f"Bearer {self.openai_api_key}"
         }
+        
         image_bytes = image_content.getvalue()
+        
         files = {
             'image': ('image.png', image_bytes, 'image/png'),
             'prompt': (None, prompt),
-            'model': (None, 'gpt-image-1') # Using the model from the original script
+            'model': (None, 'gpt-image-1'),
+            'size': (None, image_size)  # Added size parameter
         }
 
         try:
@@ -215,7 +236,7 @@ class ChibiClipGenerator:
         if self.verbose: print(timeout_msg)
         raise TimeoutError(timeout_msg)
 
-    # Step 7: High-level orchestrator (Simplified: no watermark, no local out_path)
+    # Step 7: High-level orchestrator (Updated to match image and video dimensions)
     def process_clip(self, photo_path: str, action: str = "running", ratio: str = "9:16", duration: int = 5):
         if self.verbose:
             print(f"▶ Generating clip (source: {photo_path}, action: {action}, ratio: {ratio}, duration: {duration}s)…")
@@ -227,14 +248,18 @@ class ChibiClipGenerator:
                 print(f"Reading photo from: {photo_path}")
             with open(photo_path, "rb") as f:
                 image_content = BytesIO(f.read())
+            
+            # Get appropriate image size based on selected ratio
+            image_size = IMAGE_SIZE_MAP.get(ratio, "1024x1024")
+            if self.verbose:
+                print(f"Using image size {image_size} for ratio {ratio}")
 
-            edited_b64 = self.edit_image_with_openai(image_content, prompt)
+            edited_b64 = self.edit_image_with_openai(image_content, prompt, image_size)
             img_url    = self.upload_to_imgbb(edited_b64)
             task_id    = self.generate_runway_video(img_url, action, ratio, duration)
             task_result = self.wait_for_runway_video(task_id)
             
             # Extract the video URL from the task_result correctly
-            # Based on original working code, it's task_result["output"][0]
             if "output" not in task_result or not task_result["output"]:
                 raise RuntimeError(f"No output found in Runway task result: {task_result}")
             

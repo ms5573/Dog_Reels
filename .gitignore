@@ -68,4 +68,4 @@ npm-debug.log*
 
 # Local test files
 test_*.py
-*_test_files/ 
+*_test_files/ google-credentials.json

@@ -131,9 +131,23 @@ def generate_route(): # Renamed from generate to avoid conflict with module
     # New parameter to use local storage instead of ImgBB
     use_local_storage = request.form.get("use_local_storage", "false").lower() == "true"
     
+    # Handle birthday theme automation
+    # If action is birthday-dance, force local storage and use default birthday song
+    if action == "birthday-dance":
+        use_local_storage = True
+        app.logger.info("Birthday theme selected - will use local storage and birthday song")
+    
     # Handle audio parameter
     use_default_audio = request.form.get("use_default_audio", "false").lower() == "true"
     audio_path = None
+    
+    # For birthday theme or when default audio is requested, use birthday_song.mp3
+    if action == "birthday-dance" or use_default_audio:
+        # Path to the default birthday_song.mp3 in project root
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        audio_path = os.path.join(project_root, "birthday_song.mp3")
+        if not os.path.exists(audio_path):
+            return jsonify({"error": "Default audio file not found on server"}), 500
     
     # Check if audio file was uploaded
     custom_audio = None
@@ -146,14 +160,6 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 pass
             else:
                 return jsonify({"error": "Invalid audio file type. Allowed: mp3, wav, ogg"}), 400
-    
-    # If default audio is requested, use birthday_song.mp3
-    if use_default_audio:
-        # Path to the default birthday_song.mp3 in project root
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        audio_path = os.path.join(project_root, "birthday_song.mp3")
-        if not os.path.exists(audio_path):
-            return jsonify({"error": "Default audio file not found on server"}), 500
     
     # Securely save the uploaded file to a temporary path
     # Using tempfile module for better security and automatic cleanup
@@ -174,6 +180,8 @@ def generate_route(): # Renamed from generate to avoid conflict with module
             if audio_path:
                 print(f"Audio file path: {audio_path}")
             print(f"Using local storage: {use_local_storage}")
+            if action == "birthday-dance":
+                print("Birthday theme selected - will use local storage and add birthday music")
 
         try:
             # Process the request
@@ -200,6 +208,19 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 
                 app.logger.info(f"Replaced local file URL with server URL: {server_url}")
             
+            # Add local video endpoint if available
+            if "local_video_path" in result:
+                filename = os.path.basename(result["local_video_path"])
+                # Only replace if it starts with file:// (unlikely but possible)
+                if result.get("video_url", "").startswith("file://"):
+                    server_url = request.url_root.rstrip('/') + f"/videos/{filename}"
+                    result["video_url"] = server_url
+                # Add a local video URL
+                server_url = request.url_root.rstrip('/') + f"/videos/{filename}"
+                result["local_video_url"] = server_url
+                
+                app.logger.info(f"Added server URL for video: {server_url}")
+            
             return jsonify(result), 200
         except FileNotFoundError:
             app.logger.error(f"File not found during processing: {tmp_path}")
@@ -210,6 +231,11 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         except Exception as e:
             app.logger.error(f"Unexpected server error: {e}", exc_info=True)
             return jsonify({"error": "An unexpected server error occurred."}), 500
+
+# Route to serve locally stored videos
+@app.route('/videos/<filename>')
+def serve_video(filename):
+    return send_from_directory(OUTPUT_DIR, filename)
 
 if __name__ == '__main__':
     # Make sure FLASK_ENV=development for debugger and reloader

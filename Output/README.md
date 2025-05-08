@@ -51,3 +51,14 @@ When using the CLI, the paths to these files will be included in the output JSON
 ## Maintenance
 
 This directory may grow large over time if many images and videos are generated. Consider cleaning it periodically to free up disk space. 
+
+import moviepy
+print(moviepy.__version__)
+from moviepy.editor import VideoFileClip
+print(hasattr(VideoFileClip, 'subclip'))
+exit() 
+
+sudo rm -rf /opt/homebrew/Caskroom/anaconda
+sudo rm -rf /usr/local/anaconda3
+# Just in case they exist in your home directory too
+rm -rf ~/anaconda3 ~/opt/anaconda3 ~/miniconda3 

@@ -10,8 +10,9 @@ from PIL import Image
 # Import specific modules from moviepy
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
-from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
+from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.audio.AudioClip import AudioClip
+from moviepy.audio.AudioClip import concatenate_audioclips  # Add proper import for audio concatenation
 # Import these directly from the moviepy package
 import moviepy
 # argparse and random will be imported in their respective scopes
@@ -538,173 +539,175 @@ class ChibiClipGenerator:
                 print(error_msg)
             raise FileNotFoundError(error_msg)
         
+        video_clip_obj = None # Ensure it's defined for finally block
+        audio_obj = None    # Ensure it's defined for finally block
+        final_video_obj = None # Ensure it's defined for finally block
+        
         try:
             # Create temporary directory to store downloaded video
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Download the video if it's a URL
                 video_path = os.path.join(temp_dir, "temp_video.mp4")
                 if self.verbose:
-                    print(f"① Loading video from {video_url}")
-                    print(f"  Downloading to {video_path}")
+                    print(f"① Downloading video from {video_url} to {video_path}")
                 urllib.request.urlretrieve(video_url, video_path)
                 
-                # Load the video and audio using editor module for better compatibility
+                # Load the video clip
                 if self.verbose:
-                    print(f"② Loading video with VideoFileClip")
-                video_clip = VideoFileClip(video_path)
-                
+                    print(f"② Loading video with VideoFileClip from: {video_path}")
+                video_clip_obj = VideoFileClip(video_path)
+
                 if self.verbose:
-                    print(f"③ Loading audio from {audio_path}")
-                audio_clip = AudioFileClip(audio_path)
-                
-                original_duration = video_clip.duration
-                if self.verbose:
-                    print(f"④ Original clip duration: {original_duration:.2f} seconds")
-                
-                # Calculate how many times we need to repeat the clip
-                repeat_count = int(total_duration / original_duration) + 1
-                if self.verbose:
-                    print(f"⑤ Will repeat clip {repeat_count} times to reach target duration")
-                    
-                # Create the looped video by concatenating the clip with itself
-                if self.verbose:
-                    print(f"⑥ Creating looped video by concatenating {repeat_count} copies...")
-                    
-                # Use a more controlled approach to reach the target duration
-                target_repeats = []
-                current_duration = 0
-                while current_duration < total_duration:
-                    target_repeats.append(video_clip)
-                    current_duration += original_duration
-                    
-                looped_video = concatenate_videoclips(target_repeats)
-                if self.verbose:
-                    print(f"⑦ Created looped video with duration {looped_video.duration:.2f} seconds")
-                
-                # Process the audio to match the total duration
-                if self.verbose:
-                    print(f"⑧ Processing audio (original duration: {audio_clip.duration:.2f}s)")
-                
-                # For audio processing, use the editor's AudioClip for better compatibility
-                try:
-                    if self.verbose:
-                        print(f"   Converting to editor's AudioClip for compatibility")
-                    # First, export to a temporary audio file
-                    temp_audio_file = os.path.join(temp_dir, "temp_audio.mp3")
-                    if self.verbose:
-                        print(f"   Saving audio to temporary file: {temp_audio_file}")
-                    audio_clip.write_audiofile(temp_audio_file, verbose=False, logger=None)
-                    
-                    # Reload with editor
-                    if self.verbose:
-                        print(f"   Reloading with AudioFileClip")
-                    audio_clip = AudioFileClip(temp_audio_file)
-                    
-                    if self.verbose:
-                        print(f"   Setting audio duration to {total_duration}s")
-                    
-                    # Handle duration
-                    if audio_clip.duration > total_duration:
-                        # Trim
-                        audio_clip = audio_clip.subclip(0, total_duration)
-                    elif audio_clip.duration < total_duration:
-                        # Loop
-                        audio_clip = audio_clip.fx(audio_clip.loop, duration=total_duration)
-                    
-                    if self.verbose:
-                        print(f"⑨ Audio processed to duration {audio_clip.duration:.2f}s")
-                        
-                except Exception as e:
-                    if self.verbose:
-                        print(f"Warning: Error processing audio: {e}")
-                        print("   Will try alternative methods")
-                
-                # Set the audio to the video
-                if self.verbose:
-                    print(f"⑩ Combining video and audio")
-                
-                try:
-                    # Try different approaches to add audio to video
-                    if hasattr(looped_video, 'set_audio'):
-                        if self.verbose:
-                            print("   Using set_audio method")
-                        final_clip = looped_video.set_audio(audio_clip)
+                    print(f"   Type of video_clip_obj: {type(video_clip_obj)}")
+                    if hasattr(video_clip_obj, 'subclip') and callable(getattr(video_clip_obj, 'subclip')):
+                        print("   DEBUG: video_clip_obj HAS a callable 'subclip' attribute.")
                     else:
-                        if self.verbose:
-                            print("   Using alternative method to combine audio and video")
-                        # Create a new clip with MoviePy editor
-                        # First save the video to a temporary file
-                        temp_video_file = os.path.join(temp_dir, "temp_combined_video.mp4")
-                        if self.verbose:
-                            print(f"   Saving intermediate video to {temp_video_file}")
-                        
-                        # Write the looped video without audio
-                        looped_video.write_videofile(
-                            temp_video_file,
-                            codec='libx264',
-                            audio=False,  # No audio
-                            verbose=self.verbose,
-                            fps=24,
-                            logger=None
-                        )
-                        
-                        # Now read it back with MoviePy editor which has set_audio
-                        if self.verbose:
-                            print(f"   Loading video with VideoFileClip")
-                        video_with_editor = VideoFileClip(temp_video_file)
-                        
-                        # Add audio
-                        if self.verbose:
-                            print(f"   Adding audio track")
-                        final_clip = video_with_editor.set_audio(audio_clip)
-                        
-                except Exception as e:
+                        print("   DEBUG: video_clip_obj DOES NOT HAVE a callable 'subclip' attribute.")
+                        # Forcing an error here if it doesn't have subclip, to make it super clear
+                        raise AttributeError(f"Instance of {type(video_clip_obj)} loaded from {video_path} does not have a callable 'subclip' method.")
+
+                original_duration = video_clip_obj.duration
+                if self.verbose:
+                    print(f"③ Original clip duration: {original_duration:.2f} seconds")
+
+                clips_for_concatenation = []
+                accumulated_duration = 0.0
+                loop_count = 0
+
+                if self.verbose:
+                    print(f"   Starting loop to create video of {total_duration}s duration.")
+
+                while accumulated_duration < total_duration:
+                    loop_count += 1
+                    remaining_needed = total_duration - accumulated_duration
+                    duration_this_segment = min(original_duration, remaining_needed)
+                    
                     if self.verbose:
-                        print(f"Warning: Error combining audio and video: {e}")
-                        print("   Writing video without audio")
-                    final_clip = looped_video
+                        print(f"   Loop {loop_count}: Creating segment. Target duration for segment: {duration_this_segment:.2f}s.")
+
+                    # Create a segment from the original video clip object
+                    segment = video_clip_obj.subclip(0, duration_this_segment)
+                    clips_for_concatenation.append(segment)
+                    accumulated_duration += segment.duration 
+                    if self.verbose:
+                         print(f"   Loop {loop_count}: Segment created with duration {segment.duration:.2f}s. Accumulated: {accumulated_duration:.2f}s.")
+
+                if not clips_for_concatenation:
+                     raise ValueError("Video processing loop created no clips.")
+
+                if self.verbose:
+                    print(f"④ Concatenating {len(clips_for_concatenation)} video segments.")
+                final_video_obj = concatenate_videoclips(clips_for_concatenation)
                 
-                # Determine output path
+                # Load the audio
+                if self.verbose:
+                    print(f"⑤ Loading audio from {audio_path}")
+                audio_obj = AudioFileClip(audio_path)
+                
+                # If audio is shorter than the target duration, loop it using ffmpeg
+                if audio_obj.duration < total_duration:
+                    if self.verbose:
+                        print(f"⑥ Audio ({audio_obj.duration:.2f}s) is shorter than target ({total_duration}s). Looping with FFmpeg.")
+                    temp_audio_path = os.path.join(temp_dir, "extended_audio.mp3")
+                    import subprocess
+                    # Calculate the number of loops. Ensure it's an integer. Use ceil division idea.
+                    num_loops = -(-total_duration // audio_obj.duration) # Equivalent to math.ceil(total_duration / audio_obj.duration)
+                    if self.verbose:
+                        print(f"   Calculated number of loops for audio: {num_loops}")
+
+                    # Using -stream_loop. Number of loops for input stream. -1 means infinite. We need total_duration.
+                    # FFmpeg stream_loop counts from 0. So N-1 for N loops.
+                    # Simpler: use -t to set output duration and let ffmpeg handle loop internally if input is too short with -loop 1 for input file
+                    # Forcing audio loop through re-encoding to a temporary file of target duration
+                    cmd = [
+                        "ffmpeg",
+                        "-i", audio_path, # Original audio path
+                        "-af", f"aloop=loop=-1:size={int(2**24)}:start=0,atrim=0:{total_duration}", # Loop and trim audio with filters
+                        "-c:a", "aac", # Re-encode to AAC for compatibility
+                        "-b:a", "192k",
+                        "-y", temp_audio_path
+                    ]
+                    if self.verbose:
+                        print(f"   Running FFmpeg for audio loop: {' '.join(cmd)}")
+                    try:
+                        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        audio_obj.close()
+                        audio_obj = AudioFileClip(temp_audio_path)
+                        if self.verbose:
+                            print(f"   Looped audio created. New duration: {audio_obj.duration:.2f}s")
+                    except subprocess.CalledProcessError as e:
+                        if self.verbose:
+                            print(f"   ERROR: FFmpeg audio looping failed. Stdout: {e.stdout.decode() if e.stdout else 'N/A'}, Stderr: {e.stderr.decode() if e.stderr else 'N/A'}")
+                            print(f"   Falling back to MoviePy audio subclip/loop if possible (might be inaccurate).")
+                        # Fallback to simple trim/extend if FFmpeg fails (less accurate looping)
+                        if audio_obj.duration > total_duration: audio_obj = audio_obj.subclip(0, total_duration)
+                        # MoviePy loop for audio is not reliable for precise duration, so FFmpeg is preferred.
+
+                elif audio_obj.duration > total_duration:
+                    if self.verbose:
+                        print(f"⑦ Trimming audio from {audio_obj.duration:.2f}s to {total_duration:.2f}s")
+                    audio_obj = audio_obj.subclip(0, total_duration)
+                
+                if self.verbose:
+                    print(f"⑧ Setting audio (duration: {audio_obj.duration:.2f}s) to video (duration: {final_video_obj.duration:.2f}s)")
+                final_video_obj = final_video_obj.set_audio(audio_obj)
+                
                 if output_path is None:
-                    # Generate a unique filename in the current directory
                     base_filename = "chibi_clip_with_music"
                     output_path = f"{base_filename}_{int(time.time())}.mp4"
                 
-                # Write the result to a file
                 if self.verbose:
-                    print(f"⑪ Writing {total_duration:.2f} second video with music to {output_path}")
-                    print(f"   This may take some time...")
-                final_clip.write_videofile(
-                    output_path, 
-                    codec='libx264', 
-                    audio_codec='aac', 
-                    verbose=self.verbose,
-                    fps=24,  # Explicit fps value
-                    logger=None  # Disable logger to avoid extra output
+                    print(f"⑨ Writing final video to {output_path}")
+                
+                final_video_obj.write_videofile(
+                    output_path, codec="libx264", audio_codec="aac", fps=24, logger=None
                 )
                 
-                # Close the clips to release resources
-                if self.verbose:
-                    print(f"⑫ Closing video and audio resources")
-                video_clip.close()
-                audio_clip.close()
-                if 'looped_video' in locals(): looped_video.close()
-                if 'final_clip' in locals(): final_clip.close()
-                if 'video_with_editor' in locals() and 'video_with_editor' in vars(): video_with_editor.close()
-                
-                if self.verbose:
-                    print(f"✅ Video with music saved to {output_path}")
-                return output_path
+                if os.path.exists(output_path):
+                    if self.verbose:
+                        print(f"✅ Video with music saved to {output_path}")
+                    return output_path
+                else:
+                    raise RuntimeError(f"Failed to create video file at {output_path}")
         except Exception as e:
             error_message = f"Error adding music to video: {e}"
             if self.verbose:
                 print(error_message)
+                import traceback
+                traceback.print_exc() # Print full traceback for debugging
             raise RuntimeError(error_message) from e
+        finally:
+            if self.verbose: print("⑩ Cleaning up resources in finally block...")
+            if video_clip_obj: video_clip_obj.close()
+            if audio_obj: audio_obj.close()
+            if final_video_obj: final_video_obj.close()
+            # Also close clips in clips_for_concatenation if they are not closed by concatenate_videoclips
+            if 'clips_for_concatenation' in locals():
+                for clip in clips_for_concatenation:
+                    if hasattr(clip, 'close') and callable(getattr(clip, 'close')):
+                        try: clip.close()
+                        except: pass # Ignore errors during cleanup
 
     # Step 7: High-level orchestrator (Updated to handle local file URLs)
     def process_clip(self, photo_path: str, action: str = "running", ratio: str = "9:16", duration: int = 5, audio_path: str = None, extended_duration: int = 45, use_local_storage=False):
         if self.verbose:
             print(f"▶ Generating clip (source: {photo_path}, action: {action}, ratio: {ratio}, duration: {duration}s)…")
+
+        # For birthday-dance action, force local storage and use birthday song
+        if action == "birthday-dance":
+            use_local_storage = True
+            # Set default audio path to birthday_song.mp3 if not specified
+            if audio_path is None:
+                # Look for birthday_song.mp3 in the project root
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                default_audio_path = os.path.join(project_root, "birthday_song.mp3")
+                if os.path.exists(default_audio_path):
+                    audio_path = default_audio_path
+                    if self.verbose:
+                        print(f"Birthday theme selected: Using default birthday song: {audio_path}")
+                else:
+                    if self.verbose:
+                        print("Birthday song not found at expected location. Will generate video without audio.")
 
         try:
             prompt = self.generate_ai_prompt(action)
@@ -736,7 +739,7 @@ class ChibiClipGenerator:
                 if img_url.startswith("file://"):
                     local_image_path = img_url[7:]  # Remove file:// prefix
             
-            task_id    = self.generate_runway_video(img_url, action, ratio, duration)
+            task_id = self.generate_runway_video(img_url, action, ratio, duration)
             task_result = self.wait_for_runway_video(task_id)
             
             # Extract the video URL from the task_result correctly
@@ -745,26 +748,69 @@ class ChibiClipGenerator:
             
             video_url = task_result["output"][0]
             
-            # Add music to the video if an audio path is provided
+            # For birthday-dance or when audio_path is provided, add music to the video
             local_video_path = None
-            if audio_path and os.path.exists(audio_path):
+            if action == "birthday-dance" or (audio_path and os.path.exists(audio_path)):
                 if self.verbose:
-                    print(f"Adding music from {audio_path} to video")
-                local_video_path = self.add_music_to_video(video_url, audio_path, total_duration=extended_duration)
+                    if action == "birthday-dance":
+                        print(f"Adding birthday music from {audio_path} to video")
+                    else:
+                        print(f"Adding music from {audio_path} to video")
+                
+                # For birthday theme, use the Output directory with a descriptive name
+                if action == "birthday-dance":
+                    timestamp = int(time.time())
+                    output_filename = f"birthday_dog_video_{timestamp}.mp4"
+                    output_path = os.path.join(self.output_dir, output_filename)
+                else:
+                    output_path = None  # Default naming will be used
+                
+                # Add music and loop the video to the extended duration (default 45 seconds)
+                local_video_path = self.add_music_to_video(
+                    video_url, 
+                    audio_path, 
+                    output_path=output_path, 
+                    total_duration=extended_duration
+                )
+            else:
+                # For non-birthday themes without audio, download and save the video locally 
+                # if using local storage
+                if use_local_storage:
+                    try:
+                        # Create a filename and path for the video
+                        timestamp = int(time.time())
+                        output_filename = f"dog_video_{timestamp}.mp4"
+                        local_video_path = os.path.join(self.output_dir, output_filename)
+                        
+                        if self.verbose:
+                            print(f"Downloading original video to: {local_video_path}")
+                        
+                        # Download the video
+                        urllib.request.urlretrieve(video_url, local_video_path)
+                        
+                        if self.verbose:
+                            print(f"Video saved locally to: {local_video_path}")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"Warning: Failed to download video locally: {e}")
             
             result = {"image_url": img_url, "video_url": video_url}
             if local_image_path:
                 result["local_image_path"] = local_image_path
             if local_video_path:
                 result["local_video_path"] = local_video_path
-                result["extended_duration"] = extended_duration
+                if action == "birthday-dance" or audio_path:
+                    result["extended_duration"] = extended_duration
             
             if self.verbose:
                 print(f"✅ Clip processing complete. Image: {img_url}, Video: {video_url}")
                 if local_image_path:
                     print(f"Local image saved to: {local_image_path}")
                 if local_video_path:
-                    print(f"Extended video with music ({extended_duration}s) saved to: {local_video_path}")
+                    if action == "birthday-dance" or audio_path:
+                        print(f"Extended video with music ({extended_duration}s) saved to: {local_video_path}")
+                    else:
+                        print(f"Video saved to: {local_video_path}")
             
             return result
 
@@ -813,19 +859,27 @@ if __name__ == "__main__":
     ap.add_argument("photo", help="Path to the input photo of the dog.")
     ap.add_argument("--action", default="running", 
                     choices=["running", "tail-wagging", "jumping", "birthday-dance"], 
-                    help="Action the dog should perform in the animation.")
+                    help="Action the dog should perform in the animation. Note: 'birthday-dance' option automatically uses local storage and adds birthday music.")
     ap.add_argument("--ratio", default="9:16", choices=["9:16", "16:9", "1:1"],
                     help="Aspect ratio for the output video.")
     ap.add_argument("--duration", default=5, type=int, choices=[5, 10],
                     help="Duration of the video in seconds (5 or 10).")
-    ap.add_argument("--audio", help="Path to an audio file to add to the video.")
+    ap.add_argument("--audio", help="Path to an audio file to add to the video. Not needed for birthday-dance as it uses the default birthday song.")
     ap.add_argument("--extended-duration", type=int, default=45,
                     help="Total duration in seconds for the extended video with music (default: 45)")
     ap.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     ap.add_argument("--use-local-storage", action="store_true",
-                    help="Save images locally instead of uploading to ImgBB")
+                    help="Save images locally instead of uploading to ImgBB. Auto-enabled for birthday-dance.")
     ap.add_argument("--output-dir", help="Directory to save locally stored images and videos")
     args = ap.parse_args()
+
+    # Print a special message for birthday theme
+    if args.action == "birthday-dance":
+        print("🎂 Birthday theme selected! 🎂")
+        print("- Will create a dancing dog with a party hat")
+        print("- Will automatically use local storage")
+        print("- Will add birthday music and loop to 45 seconds")
+        print("- Output will be saved to the Output directory\n")
 
     try:
         gen = ChibiClipGenerator(
@@ -856,7 +910,10 @@ if __name__ == "__main__":
         if res.get("local_image_path"):
             print(f"Local image saved to: {res['local_image_path']}")
         if res.get("local_video_path"):
-            print(f"Extended video with music ({res.get('extended_duration', 45)}s) saved to: {res['local_video_path']}")
+            if args.action == "birthday-dance" or args.audio:
+                print(f"Extended video with music ({res.get('extended_duration', 45)}s) saved to: {res['local_video_path']}")
+            else:
+                print(f"Video saved to: {res['local_video_path']}")
 
     except ValueError as e: 
         print(f"Error: {e}")

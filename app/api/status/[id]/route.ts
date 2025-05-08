@@ -4,12 +4,10 @@ import path from 'path';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: { id: string } }
 ) {
   try {
-    // Make sure to await params for Next.js 15 compatibility
-    const { id } = params;
-    const taskId = id;
+    const taskId = context.params.id;
     const outputDir = path.join(process.cwd(), 'Output');
     
     // Check if status file exists

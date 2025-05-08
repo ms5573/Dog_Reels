@@ -53,18 +53,23 @@ export async function POST(request: NextRequest) {
     // Run the Python Chibi-Clip process asynchronously
     // Use the birthday-dance action to create a birthday themed animation
     try {
-      // Use conda run with the specific environment
-      execPromise(`conda run -n chibi_env python chibi_clip/chibi_clip.py "${imagePath}" --action "birthday-dance" --extended-duration 45 --verbose`)
+      // Use conda run with the proper environment that has requests installed
+      const command = `conda run -n chibi_env python chibi_clip/chibi_clip.py "${imagePath}" --action "birthday-dance" --extended-duration 45 --verbose`;
+      
+      console.log(`Executing command: ${command}`);
+      
+      execPromise(command)
         .then(({ stdout, stderr }) => {
           console.log('Chibi-Clip process completed');
           console.log('Output:', stdout);
           
-          // Look for the local_video_path in the output
-          const videoPathMatch = stdout.match(/Local video path: (.*\.mp4)/);
-          const videoPath = videoPathMatch ? videoPathMatch[1] : null;
+          const extendedVideoMatch = stdout.match(/Extended video with music .+? saved to: (.+\.mp4)/);
+          const videoPathMatch = stdout.match(/"local_video_path": "(.+\.mp4)"/);
+          
+          const videoPath = extendedVideoMatch ? extendedVideoMatch[1] : 
+                            videoPathMatch ? videoPathMatch[1] : null;
           
           if (videoPath && fs.existsSync(videoPath)) {
-            // Update the status file with the completed information
             fs.writeFileSync(statusFile, JSON.stringify({
               status: 'COMPLETE',
               stage: 'Complete',

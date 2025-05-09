@@ -178,6 +178,23 @@ class ChibiClipGenerator:
         if self.verbose:
             print(f"Attempting to convert {src_path} to PNG using ffmpeg...")
         
+        # Guard: Check if src_path is a recognized image before attempting conversion
+        image_type_for_conversion = imghdr.what(src_path)
+        if image_type_for_conversion is None:
+            # Attempt to read header for logging if conversion is aborted
+            header_for_log = ""
+            try:
+                with open(src_path, "rb") as f_header:
+                    header_for_log = f_header.read(16).hex()
+            except Exception:
+                header_for_log = "Could not read header"
+            raise RuntimeError(
+                f"{src_path} is not a recognised bitmap image – aborting conversion. "
+                f"imghdr type: None. Header (first 16 bytes): {header_for_log}"
+            )
+        if self.verbose:
+            print(f"chibi_clip._to_png: imghdr identified source as '{image_type_for_conversion}' before ffmpeg conversion.")
+
         # Create a temporary name for the output PNG
         temp_png_path = tempfile.mktemp(suffix=".png", prefix="converted_", dir=self.output_dir or "/tmp")
         
@@ -836,8 +853,32 @@ class ChibiClipGenerator:
             
             # Handle different URL types (http, file, local path)
             if video_url.startswith(('http://', 'https://')):
-                # Remote URL - use urllib
-                urllib.request.urlretrieve(video_url, video_path)
+                # Remote URL - use requests for better error handling and content type checking
+                try:
+                    r = requests.get(video_url, timeout=60, stream=True) # Added stream=True
+                    r.raise_for_status() # Check for HTTP errors
+                    
+                    content_type = r.headers.get("Content-Type", "")
+                    if self.verbose:
+                        print(f"   Downloaded video content type: {content_type}")
+                    if content_type.startswith("text/") or content_type.startswith("application/xml") or content_type.startswith("application/json"):
+                        # Try to get some content for debugging if it's text
+                        preview = ""
+                        try:
+                            preview = r.text[:200] # Read a bit of the text response
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            f"Expected video, got {content_type} from {video_url}. Response preview: '{preview}...'"
+                        )
+
+                    with open(video_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192): # Download in chunks
+                            f.write(chunk)
+                    if self.verbose:
+                        print(f"   Video downloaded successfully to {video_path} using requests.")
+                except requests.exceptions.RequestException as req_e:
+                    raise RuntimeError(f"Error downloading video from {video_url} using requests: {req_e}") from req_e
             elif video_url.startswith('file://'):
                 # Local file URL - copy the file
                 local_path = video_url[7:]  # Remove file:// prefix
@@ -1247,6 +1288,34 @@ class ChibiClipGenerator:
                 raise FileNotFoundError(f"ChibiClip: Input photo file does not exist at path: {photo_path}")
             if os.path.getsize(photo_path) == 0:
                 raise ValueError(f"ChibiClip: Input photo file is empty: {photo_path}")
+
+            # Fail fast if the file looks like text (XML, HTML, JSON)
+            try:
+                with open(photo_path, "rb") as f_text_check:
+                    head = f_text_check.read(64)
+                    # Strip leading whitespace (like UTF-8 BOM, etc.) before checking
+                    stripped_head = head.lstrip()
+                    if stripped_head.startswith((b"<", b"{")): # Common starts for XML/HTML and JSON
+                        # More specific check for <?xml
+                        if stripped_head.startswith(b"<?xml"):
+                             error_detail = "looks like an XML document (e.g., S3 error page)"
+                        elif stripped_head.startswith(b"<html") or stripped_head.startswith(b"<!DOCTYPE"):
+                             error_detail = "looks like an HTML document"
+                        elif stripped_head.startswith(b"{"):
+                             error_detail = "looks like a JSON response"
+                        else:
+                             error_detail = "starts with '<' or '{', indicating a text-based file"
+                        
+                        raise ValueError(
+                            f"ChibiClip: Input file {photo_path} is not a binary image; it {error_detail}. "
+                            f"Header (first ~64 bytes): {head.hex()}..."
+                        )
+            except ValueError: # Re-raise if it's our specific error
+                raise
+            except Exception as e_text_check: # Catch other read errors
+                if self.verbose:
+                    print(f"ChibiClip: Could not perform initial text check on {photo_path}: {e_text_check}")
+
 
             # Log first 16 bytes for header sniffing
             file_header_bytes_hex = "unknown (read error)"

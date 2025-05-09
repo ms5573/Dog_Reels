@@ -495,8 +495,19 @@ class ChibiClipGenerator:
 
     # Step 5: ImgBB upload (modified to include local fallback)
     def upload_to_imgbb(self, image_base64: str, use_local_fallback=True) -> str:
+        # If use_local_fallback is True, just return a data URI directly
+        # This avoids the memory spike from multipart/form-data buffer during ImgBB upload
+        if use_local_fallback:
+            if self.verbose:
+                print("Using data URI directly to avoid memory overhead of ImgBB upload")
+            # Create a data URI from the base64 data
+            return f"data:image/png;base64,{image_base64}"
+        
         if not self.imgbb_api_key:
             if self.verbose:
+                print("No ImgBB API key provided and local fallback disabled.")
+            raise ValueError("ImgBB API key not provided and local fallback disabled.")
+        
                 print("No ImgBB API key provided. Using local storage.")
             if use_local_fallback:
                 result = self.save_image_locally(image_base64)
@@ -560,61 +571,28 @@ class ChibiClipGenerator:
             
             # Read the image data
             try:
+                # If we only have a local file, convert it straight to a data-URI.
+                # This avoids the extra memory spike of an ImgBB upload and works
+                # fine with the Runway endpoint.
                 with open(local_path, "rb") as f:
                     image_data = f.read()
+                
                 # Convert to base64
                 image_base64 = base64.b64encode(image_data).decode('utf-8')
                 
-                # First try ImgBB if we have an API key
-                if self.imgbb_api_key:
-                    try:
-                        if self.verbose:
-                            print("Attempting to upload to ImgBB for Runway compatibility...")
-                        
-                        url = "https://api.imgbb.com/1/upload"
-                        payload = {
-                            'key': self.imgbb_api_key,
-                            'image': image_base64
-                        }
-                        response = requests.post(url, data=payload, timeout=30)
-                        response.raise_for_status()
-                        img_url = response.json()["data"]["url"]
-                        
-                        if self.verbose:
-                            print(f"Image uploaded to ImgBB for Runway: {img_url}")
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"ImgBB upload failed: {e}")
-                            print("Trying data URI approach...")
-                        
-                        # Determine the file extension and appropriate MIME type
-                        file_ext = os.path.splitext(local_path)[1].lower()
-                        mime_type = "image/jpeg"  # Default
-                        if file_ext == ".png":
-                            mime_type = "image/png"
-                        elif file_ext in [".jpg", ".jpeg"]:
-                            mime_type = "image/jpeg"
-                        
-                        # Create a data URI directly
-                        img_url = f"data:{mime_type};base64,{image_base64}"
-                        
-                        if self.verbose:
-                            print(f"Using data URI for Runway (length: {len(img_url)} characters)")
-                else:
-                    # No ImgBB key, use data URI directly
-                    # Determine the file extension and appropriate MIME type
-                    file_ext = os.path.splitext(local_path)[1].lower()
-                    mime_type = "image/jpeg"  # Default
-                    if file_ext == ".png":
-                        mime_type = "image/png"
-                    elif file_ext in [".jpg", ".jpeg"]:
-                        mime_type = "image/jpeg"
-                    
-                    # Create a data URI directly
-                    img_url = f"data:{mime_type};base64,{image_base64}"
-                    
-                    if self.verbose:
-                        print(f"Using data URI for Runway (length: {len(img_url)} characters)")
+                # Determine the file extension and appropriate MIME type
+                file_ext = os.path.splitext(local_path)[1].lower()
+                mime_type = "image/jpeg"  # Default
+                if file_ext == ".png":
+                    mime_type = "image/png"
+                elif file_ext in [".jpg", ".jpeg"]:
+                    mime_type = "image/jpeg"
+                
+                # Create a data URI directly
+                img_url = f"data:{mime_type};base64,{image_base64}"
+                
+                if self.verbose:
+                    print(f"Using data URI for Runway (length: {len(img_url)} characters)")
             except Exception as e:
                 error_message = f"Error processing local image for Runway: {e}"
                 if self.verbose:
@@ -894,17 +872,11 @@ class ChibiClipGenerator:
             if self.verbose:
                 print(f"② Loading video with VideoFileClip from: {video_path}")
             try:
-                # Use ffmpeg_params to reduce memory usage
-                ffmpeg_opts = {
-                    'bufsize': '5000k',       # Limit buffer size
-                    'threads': '2'            # Limit threads for lower memory usage
-                }
-                
                 # Memory optimizations:
                 # 1. audio=False: Don't load the audio track from the video, we'll add our own
                 # 2. target_resolution: Downscale the video during loading to conserve memory
                 # 3. Using context manager to ensure resources are cleaned up
-                with VideoFileClip(video_path, audio=False, target_resolution=(480, None), ffmpeg_params=ffmpeg_opts) as original_clip:
+                with VideoFileClip(video_path, audio=False, target_resolution=(480, None)) as original_clip:
                     if self.verbose:
                         print(f"   Original video dimensions: {original_clip.size}, duration: {original_clip.duration:.2f}s")
                     
@@ -1039,8 +1011,7 @@ class ChibiClipGenerator:
                             final_animated_video_obj = VideoFileClip(
                                 ffmpeg_output, 
                                 audio=False,
-                                target_resolution=(480, None),
-                                fps_source="fps"
+                                target_resolution=(480, None)
                             )
                             if final_animated_video_obj.duration > total_duration:
                                 final_animated_video_obj = final_animated_video_obj.subclip(0, total_duration)
@@ -1250,7 +1221,7 @@ class ChibiClipGenerator:
                                         bitrate="5000k",
                                         preset="ultrafast",  # Use ultrafast for temp file
                                         threads=2,
-                                        ffmpeg_params=["-pix_fmt", "yuv420p", "-bufsize", "5000k"],
+                                        ffmpeg_params=["-pix_fmt", "yuv420p"],
                                         logger=None,
                                         verbose=False
                                     )
@@ -1331,11 +1302,7 @@ class ChibiClipGenerator:
                     bitrate="4000k",  # Further reduced bitrate
                     preset="ultrafast",  # Use ultrafast (lowest memory usage)
                     threads=2,
-                    ffmpeg_params=[
-                        "-pix_fmt", "yuv420p",
-                        "-bufsize", "4000k",
-                        "-maxrate", "6000k"
-                    ],
+                    ffmpeg_params=["-pix_fmt", "yuv420p"],
                     logger=None,
                     verbose=False
                 )

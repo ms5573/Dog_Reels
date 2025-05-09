@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 import shutil
 from PIL import Image
 import io
+import magic
+import subprocess
 
 # Load environment variables for Celery
 from dotenv import load_dotenv
@@ -103,14 +105,45 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                     response = requests.get(photo_url, stream=True)
                     response.raise_for_status()
                     
+                    # Check content type and headers
+                    content_type = response.headers.get('Content-Type', '')
+                    content_length = response.headers.get('Content-Length', 'unknown')
+                    print(f"S3 response headers: Content-Type={content_type}, Content-Length={content_length}")
+                    
+                    # Check if content type suggests this is actually an image
+                    if not content_type.startswith('image/'):
+                        print(f"Warning: Content-Type '{content_type}' may not be an image")
+                    
                     # First save the raw downloaded file
+                    raw_bytes = b''
                     with open(photo_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
+                            # Save first chunk for debugging
+                            if not raw_bytes:
+                                raw_bytes = chunk[:32]  # First 32 bytes for magic number checking
+                    
+                    print(f"Downloaded file header bytes: {raw_bytes.hex()}")
                     
                     # Verify the file exists and has content
                     if os.path.exists(photo_path) and os.path.getsize(photo_path) > 0:
-                        print(f"Downloaded file size: {os.path.getsize(photo_path)} bytes")
+                        file_size = os.path.getsize(photo_path)
+                        print(f"Downloaded file size: {file_size} bytes")
+                        
+                        # Additional file type verification
+                        try:
+                            mime = magic.Magic(mime=True)
+                            detected_type = mime.from_file(photo_path)
+                            print(f"Detected MIME type: {detected_type}")
+                            
+                            # If not detected as an image, try using file command
+                            if not detected_type.startswith('image/'):
+                                result = subprocess.run(['file', photo_path], capture_output=True, text=True)
+                                print(f"File command output: {result.stdout}")
+                        except ImportError:
+                            print("Magic library not available, skipping MIME detection")
+                        except Exception as e:
+                            print(f"Error detecting file type: {e}")
                     else:
                         raise ValueError(f"Downloaded file is empty or doesn't exist: {photo_path}")
                     

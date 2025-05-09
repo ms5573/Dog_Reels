@@ -1167,23 +1167,108 @@ class ChibiClipGenerator:
                 # Verify we have some actual data
                 if not file_data:
                     raise ValueError(f"No data read from file {photo_path}")
+                
+                file_size = len(file_data)
+                if self.verbose:
+                    print(f"Read {file_size} bytes from file {photo_path}")
+                    # Print first few bytes to help with debugging
+                    print(f"File header: {file_data[:16].hex()}")
                     
                 # Create a BytesIO object from the read data
                 image_content = BytesIO(file_data)
                 
-                # Verify the image file format
+                # Verify the image file format - with enhanced error handling
                 try:
-                    with Image.open(image_content) as img:
+                    # Verify BytesIO has data
+                    if image_content.getbuffer().nbytes == 0:
+                        raise ValueError("BytesIO object contains no data")
+                    
+                    # Reset position to start
+                    image_content.seek(0)
+                    
+                    # Try to open with different image libraries for redundancy
+                    try:
+                        img = Image.open(image_content)
                         img_format = img.format
                         img_mode = img.mode
                         img_size = img.size
                         if self.verbose:
                             print(f"Successfully loaded image: format={img_format}, mode={img_mode}, size={img_size}")
-                    # Reset BytesIO position
+                        # Close the image to avoid resource issues
+                        img.close()
+                    except Exception as pil_error:
+                        # Log detailed error
+                        if self.verbose:
+                            print(f"PIL Error: {pil_error}")
+                            print("Attempting to save and reload the image file directly...")
+                        
+                        # Try writing to a direct file and loading again
+                        temp_image_path = os.path.join(self.output_dir, f"debug_image_{uuid.uuid4().hex}.png")
+                        image_content.seek(0)
+                        with open(temp_image_path, "wb") as tmp_file:
+                            tmp_file.write(image_content.getvalue())
+                        
+                        if self.verbose:
+                            print(f"Wrote {os.path.getsize(temp_image_path)} bytes to {temp_image_path}")
+                        
+                        # Try loading the direct file
+                        img = Image.open(temp_image_path)
+                        img_format = img.format
+                        img_mode = img.mode
+                        img_size = img.size
+                        if self.verbose:
+                            print(f"Successfully loaded from temp file: format={img_format}, mode={img_mode}, size={img_size}")
+                        
+                        # Use the temp file instead going forward
+                        photo_path = temp_image_path
+                        
+                        # Close the image
+                        img.close()
+                    
+                    # Reset BytesIO position after checks
                     image_content.seek(0)
+                    
                 except Exception as img_error:
-                    raise ValueError(f"Could not verify image format: {img_error}")
+                    if self.verbose:
+                        print(f"Critical image verification error: {img_error}")
+                        print(f"Photo path: {photo_path}, exists: {os.path.exists(photo_path)}, size: {os.path.getsize(photo_path) if os.path.exists(photo_path) else 'N/A'}")
+                        
+                        # Try to get more info about the file
+                        import subprocess
+                        try:
+                            result = subprocess.run(['file', photo_path], capture_output=True, text=True)
+                            print(f"File command output: {result.stdout}")
+                        except Exception as file_cmd_error:
+                            print(f"Could not run 'file' command: {file_cmd_error}")
+                    
+                    # Try loading the image directly without BytesIO
+                    try:
+                        if self.verbose:
+                            print("Attempting to bypass BytesIO and load file directly...")
+                        direct_img = Image.open(photo_path)
+                        if self.verbose:
+                            print(f"Direct load successful: format={direct_img.format}, mode={direct_img.mode}")
+                        
+                        # Create a fresh BytesIO from the direct image
+                        new_buffer = BytesIO()
+                        direct_img.save(new_buffer, format="PNG")
+                        new_buffer.seek(0)
+                        direct_img.close()
+                        
+                        # Replace the original BytesIO
+                        image_content = new_buffer
+                        if self.verbose:
+                            print(f"Created new BytesIO with size: {image_content.getbuffer().nbytes} bytes")
+                    except Exception as direct_error:
+                        if self.verbose:
+                            print(f"Direct load also failed: {direct_error}")
+                        raise ValueError(f"Could not verify image format: {img_error}")
             except Exception as e:
+                if self.verbose:
+                    print(f"Error in image loading: {e}")
+                    print(f"Photo path: {photo_path}")
+                    import traceback
+                    traceback.print_exc()
                 raise ValueError(f"Error reading image file: {e}")
             
             # Get appropriate image size based on selected ratio

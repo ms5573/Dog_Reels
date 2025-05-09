@@ -4,6 +4,22 @@ import uuid
 import tempfile # For secure temporary file creation
 from werkzeug.utils import secure_filename # For secure filenames
 
+# Import Celery tasks
+try:
+    from .tasks import process_clip as process_clip_task
+except ImportError:
+    from tasks import process_clip as process_clip_task
+
+# Import S3 storage
+try:
+    from .storage import S3Storage
+except ImportError:
+    try:
+        from storage import S3Storage
+    except ImportError:
+        print("Warning: S3Storage not available. S3 functionality will be disabled.")
+        S3Storage = None
+
 # Assuming chibi_clip.py is in the same directory or package
 try:
     # Try relative import first (when imported as a package)
@@ -104,15 +120,31 @@ def serve_image(filename):
 def index():
     return render_template('index.html')
 
+# Determine if we should use S3 storage
+use_s3 = os.getenv('USE_S3_STORAGE', 'false').lower() == 'true'
+
+# Initialize S3 storage if enabled
+s3_storage = None
+if use_s3 and S3Storage:
+    try:
+        s3_storage = S3Storage()
+        print("S3 storage initialized successfully")
+    except Exception as e:
+        print(f"Error initializing S3 storage: {e}")
+        use_s3 = False
+else:
+    print("S3 storage is disabled")
+
 @app.route("/generate", methods=["POST"])
 def generate_route(): # Renamed from generate to avoid conflict with module
     if not all([OPENAI_KEY, RUNWAY_KEY]):
         return jsonify({"error": "Server is not configured with necessary API keys."}), 500
 
-    if 'photo' not in request.files:
+    if 'imageFile' not in request.files and 'photo' not in request.files:
         return jsonify({"error": "No photo file part in the request"}), 400
     
-    file = request.files["photo"]
+    # Support both 'imageFile' (for new frontend) and 'photo' (for legacy)
+    file = request.files.get("imageFile") or request.files.get("photo")
     if file.filename == '' :
         return jsonify({"error": "No selected file"}), 400
 
@@ -166,82 +198,159 @@ def generate_route(): # Renamed from generate to avoid conflict with module
             else:
                 return jsonify({"error": "Invalid audio file type. Allowed: mp3, wav, ogg"}), 400
     
-    # Securely save the uploaded file to a temporary path
-    # Using tempfile module for better security and automatic cleanup
+    # Create a unique job ID
+    job_id = str(uuid.uuid4())
+    
+    # Create temporary directory for processing files
+    temp_dir = os.path.join(OUTPUT_DIR, f"temp_{job_id}")
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Securely save the uploaded file to the temp directory
     filename = secure_filename(file.filename) # Sanitize filename
-    # Create a temporary directory that will be cleaned up
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = os.path.join(tmp_dir, filename)
-        file.save(tmp_path)
-        
-        # If a custom audio file was uploaded, save it temporarily
-        if custom_audio and custom_audio.filename != '':
-            audio_filename = secure_filename(custom_audio.filename)
-            audio_path = os.path.join(tmp_dir, audio_filename)
-            custom_audio.save(audio_path)
-        
-        if SERVER_VERBOSE:
-            print(f"Temporary file saved to: {tmp_path}")
-            if audio_path:
-                print(f"Audio file path: {audio_path}")
-            print(f"Using local storage: {use_local_storage}")
-            if action == "birthday-dance":
-                print("Birthday theme selected - will use local storage and add birthday music")
-
+    file_ext = os.path.splitext(filename)[1]
+    saved_filename = f"{job_id}{file_ext}"
+    saved_path = os.path.join(temp_dir, saved_filename)
+    file.save(saved_path)
+    
+    # Save audio file if provided
+    saved_audio_path = None
+    if custom_audio and custom_audio.filename != '':
+        audio_filename = secure_filename(custom_audio.filename)
+        audio_ext = os.path.splitext(audio_filename)[1]
+        saved_audio_filename = f"{job_id}_audio{audio_ext}"
+        saved_audio_path = os.path.join(temp_dir, saved_audio_filename)
+        custom_audio.save(saved_audio_path)
+        audio_path = saved_audio_path
+    
+    # If S3 storage is enabled, upload the input files
+    s3_photo_path = None
+    s3_audio_path = None
+    
+    if use_s3 and s3_storage:
         try:
-            # Process the request
-            app.logger.info(f"Processing request: action={action}, ratio={ratio}, duration={duration}, extended_duration={extended_duration}, temp_file={tmp_path}, audio_path={audio_path}, use_local_storage={use_local_storage}")
+            # Upload the input photo to S3
+            with open(saved_path, 'rb') as f:
+                s3_photo_url, s3_photo_key = s3_storage.upload_file(
+                    saved_path, 
+                    key_prefix="inputs"
+                )
             
-            result = gen.process_clip(
-                photo_path=tmp_path, 
-                action=action, 
-                ratio=ratio, 
-                duration=duration,
-                audio_path=audio_path,
-                extended_duration=extended_duration,
-                use_local_storage=use_local_storage,
-                birthday_message=birthday_message # Pass the message
-            )
-            app.logger.info(f"Processing successful: {result}")
+            app.logger.info(f"Uploaded input photo to S3: {s3_photo_url}")
             
-            # If using local storage, modify the URL to use our server endpoint
-            if "local_image_path" in result and result.get("image_url", "").startswith("file://"):
+            # Upload the audio file if available
+            if saved_audio_path:
+                s3_audio_url, s3_audio_key = s3_storage.upload_file(
+                    saved_audio_path, 
+                    key_prefix="inputs"
+                )
+                app.logger.info(f"Uploaded input audio to S3: {s3_audio_url}")
+                s3_audio_path = s3_audio_url
+        except Exception as e:
+            app.logger.error(f"Error uploading to S3: {e}")
+            # Continue with local storage
+        
+    if SERVER_VERBOSE:
+        print(f"File saved to: {saved_path}")
+        if audio_path:
+            print(f"Audio file path: {audio_path}")
+        print(f"Using local storage: {use_local_storage}")
+        print(f"Using S3 storage: {use_s3}")
+        if action == "birthday-dance":
+            print("Birthday theme selected - will use local storage and add birthday music")
+
+    try:
+        # Process the request asynchronously with Celery
+        app.logger.info(f"Starting async task: action={action}, ratio={ratio}, duration={duration}, extended_duration={extended_duration}")
+        
+        # Launch the task
+        task = process_clip_task.delay(
+            photo_path=saved_path, 
+            action=action, 
+            ratio=ratio, 
+            duration=duration,
+            audio_path=audio_path,
+            extended_duration=extended_duration,
+            use_local_storage=use_local_storage,
+            birthday_message=birthday_message
+        )
+        
+        # Return the task ID so the client can poll for results
+        return jsonify({
+            "status": "processing",
+            "job_id": job_id,
+            "task_id": task.id,
+            "message": "Your video is being processed. Check status at /status/{task_id}"
+        }), 202
+        
+    except Exception as e:
+        app.logger.error(f"Error initiating job: {e}", exc_info=True)
+        return jsonify({"error": "An unexpected server error occurred."}), 500
+
+# Add a route to check the status of a task
+@app.route("/status/<task_id>", methods=["GET"])
+def check_status(task_id):
+    """Check the status of a processing task."""
+    try:
+        task = process_clip_task.AsyncResult(task_id)
+        
+        if task.state == 'PENDING':
+            response = {
+                'status': 'pending',
+                'message': 'Task is waiting to be processed'
+            }
+        elif task.state == 'FAILURE':
+            response = {
+                'status': 'failed',
+                'message': str(task.info)
+            }
+        elif task.state == 'SUCCESS':
+            response = {
+                'status': 'completed',
+                'result': task.result
+            }
+            
+            # Add server URLs for local files
+            if "local_image_path" in task.result and task.result.get("image_url", "").startswith("file://"):
                 # Extract filename from the path
-                filename = os.path.basename(result["local_image_path"])
+                filename = os.path.basename(task.result["local_image_path"])
                 # Replace file:// URL with our server endpoint
                 server_url = request.url_root.rstrip('/') + f"/images/{filename}"
-                result["image_url"] = server_url
-                
-                app.logger.info(f"Replaced local file URL with server URL: {server_url}")
+                response['result']["image_url"] = server_url
             
             # Add local video endpoint if available
-            if "local_video_path" in result:
-                filename = os.path.basename(result["local_video_path"])
+            if "local_video_path" in task.result:
+                filename = os.path.basename(task.result["local_video_path"])
                 # Only replace if it starts with file:// (unlikely but possible)
-                if result.get("video_url", "").startswith("file://"):
+                if task.result.get("video_url", "").startswith("file://"):
                     server_url = request.url_root.rstrip('/') + f"/videos/{filename}"
-                    result["video_url"] = server_url
+                    response['result']["video_url"] = server_url
                 # Add a local video URL
                 server_url = request.url_root.rstrip('/') + f"/videos/{filename}"
-                result["local_video_url"] = server_url
-                
-                app.logger.info(f"Added server URL for video: {server_url}")
-            
-            return jsonify(result), 200
-        except FileNotFoundError:
-            app.logger.error(f"File not found during processing: {tmp_path}")
-            return jsonify({"error": "File disappeared during processing. Please try again."}), 500
-        except (ValueError, RuntimeError, TimeoutError) as e:
-            app.logger.error(f"Error during clip generation: {e}")
-            return jsonify({"error": str(e)}), 500
-        except Exception as e:
-            app.logger.error(f"Unexpected server error: {e}", exc_info=True)
-            return jsonify({"error": "An unexpected server error occurred."}), 500
+                response['result']["local_video_url"] = server_url
+        else:
+            response = {
+                'status': 'processing',
+                'message': 'Task is being processed'
+            }
+        return jsonify(response)
+    except Exception as e:
+        app.logger.error(f"Error checking task status: {e}", exc_info=True)
+        return jsonify({"error": "An error occurred checking task status"}), 500
 
 # Route to serve locally stored videos
 @app.route('/videos/<filename>')
 def serve_video(filename):
     return send_from_directory(OUTPUT_DIR, filename)
+
+# Add health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for monitoring and container orchestration."""
+    return jsonify({
+        "status": "healthy",
+        "service": "dog-reels",
+        "version": "1.0.0"
+    }), 200
 
 if __name__ == '__main__':
     # Make sure FLASK_ENV=development for debugger and reloader

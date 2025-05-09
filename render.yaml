@@ -1,0 +1,71 @@
+services:
+  # Web service
+  - type: web
+    name: dog-reels-web
+    env: docker
+    region: oregon  # Choose a region close to your users
+    numInstances: 1
+    healthCheckPath: /health
+    buildCommand: ""  # Docker handles the build
+    # Use a reasonable plan for your needs
+    plan: starter
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: dog-reels-redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: IMGBB_API_KEY
+        sync: false
+      - key: RUNWAY_API_KEY
+        sync: false
+      - key: USE_S3_STORAGE
+        value: "true"
+      - key: S3_BUCKET_NAME
+        sync: false
+      - key: AWS_REGION
+        value: "us-east-1"
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+  
+  # Worker service for Celery
+  - type: worker
+    name: dog-reels-worker
+    env: docker
+    region: oregon
+    numInstances: 1
+    dockerCommand: celery -A chibi_clip.tasks worker --loglevel=info
+    buildCommand: ""  # Docker handles the build
+    plan: starter
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: dog-reels-redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: IMGBB_API_KEY
+        sync: false
+      - key: RUNWAY_API_KEY
+        sync: false
+      - key: USE_S3_STORAGE
+        value: "true"
+      - key: S3_BUCKET_NAME
+        sync: false
+      - key: AWS_REGION
+        value: "us-east-1"
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+  # Redis service
+  - type: redis
+    name: dog-reels-redis
+    ipAllowList: []  # Only allow internal connections
+    plan: starter     # Appropriate plan for development, adjust as needed 

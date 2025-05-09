@@ -7,7 +7,8 @@ from io import BytesIO
 import urllib.request
 import tempfile
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFile
+import imghdr
 # Import specific modules from moviepy
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
@@ -128,6 +129,9 @@ IMAGE_SIZE_MAP = {
 
 DUR_ALLOWED = (5, 10)
 
+# Allow Pillow to load truncated images
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 class ChibiClipGenerator:
     # Step 2: Rename & slim the class constructor
     def __init__(self, openai_api_key, imgbb_api_key, runway_api_key, *, verbose=True, output_dir=None):
@@ -164,6 +168,75 @@ class ChibiClipGenerator:
         if self.verbose:
             print("ChibiClipGenerator initialized.")
             
+    # New helper method to convert images to PNG using ffmpeg
+    def _to_png(self, src_path: str) -> str:
+        """
+        Converts an image file to PNG format using ffmpeg.
+        Overwrites the original file with the PNG version.
+        Returns the path to the (potentially) converted file.
+        """
+        if self.verbose:
+            print(f"Attempting to convert {src_path} to PNG using ffmpeg...")
+        
+        # Create a temporary name for the output PNG
+        temp_png_path = tempfile.mktemp(suffix=".png", prefix="converted_", dir=self.output_dir or "/tmp")
+        
+        try:
+            # Ensure output directory exists if self.output_dir is used
+            if self.output_dir and not os.path.exists(self.output_dir):
+                os.makedirs(self.output_dir, exist_ok=True)
+
+            # Command to convert to PNG using ffmpeg
+            # -y: overwrite output files without asking
+            # -i: input file
+            # -vf "alphaextract,format=rgba,alphamerge": attempt to preserve transparency if present
+            # Note: More complex alpha preservation might be needed depending on source
+            # For simplicity, basic conversion first. If alpha is critical, this can be expanded.
+            cmd = [
+                "ffmpeg", "-y", "-i", src_path, 
+                "-vf", "format=rgba", # Try to ensure RGBA for PNG output
+                temp_png_path
+            ]
+            if self.verbose:
+                print(f"Executing ffmpeg command: {' '.join(cmd)}")
+            
+            # Run ffmpeg
+            # Use DEVNULL for stdout/stderr to avoid excessive console output unless debugging
+            result = subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            
+            if self.verbose:
+                print(f"ffmpeg conversion successful. Output at {temp_png_path}")
+            
+            # Replace the original file with the converted PNG
+            shutil.move(temp_png_path, src_path)
+            if self.verbose:
+                print(f"Replaced {src_path} with its PNG version.")
+            return src_path
+        except subprocess.CalledProcessError as e:
+            if self.verbose:
+                print(f"ffmpeg conversion failed for {src_path}. Error: {e.stderr.decode() if e.stderr else e}")
+            # Clean up temp file if conversion failed
+            if os.path.exists(temp_png_path):
+                try:
+                    os.remove(temp_png_path)
+                except OSError:
+                    pass # Ignore if removal fails
+            raise RuntimeError(f"Failed to convert {src_path} to PNG with ffmpeg: {e}") from e
+        except FileNotFoundError: # ffmpeg not found
+             if self.verbose:
+                print("ffmpeg command not found. Cannot convert image. Ensure ffmpeg is installed and in PATH.")
+             raise RuntimeError("ffmpeg not found. Conversion to PNG failed.")
+        except Exception as e_move:
+            if self.verbose:
+                print(f"Error during moving/cleanup of converted file: {e_move}")
+            # Clean up temp file if move failed
+            if os.path.exists(temp_png_path):
+                try:
+                    os.remove(temp_png_path)
+                except OSError:
+                    pass
+            raise RuntimeError(f"Error post-conversion for {src_path}: {e_move}") from e_move
+
     # New method to save images locally
     def save_image_locally(self, image_base64: str) -> str:
         """
@@ -1167,7 +1240,7 @@ class ChibiClipGenerator:
                         print("Birthday song not found at expected location. Will generate video without audio.")
 
         try:
-            # ===== NEW INITIAL VALIDATION BLOCK for photo_path =====
+            # ===== ENHANCED INITIAL VALIDATION BLOCK for photo_path =====
             if self.verbose:
                 print(f"ChibiClip: Initial validation for photo_path: {photo_path}")
             if not os.path.exists(photo_path):
@@ -1175,18 +1248,56 @@ class ChibiClipGenerator:
             if os.path.getsize(photo_path) == 0:
                 raise ValueError(f"ChibiClip: Input photo file is empty: {photo_path}")
 
-            file_type_confirmed_by_tool = False
-            detected_mime_type = "unknown"
-            file_header_bytes_hex = "unknown"
-
+            # Log first 16 bytes for header sniffing
+            file_header_bytes_hex = "unknown (read error)"
             try:
                 with open(photo_path, "rb") as f_check_header:
-                    file_header_bytes_hex = f_check_header.read(32).hex()
+                    file_header_bytes_hex = f_check_header.read(16).hex() # Read first 16 bytes
                 if self.verbose:
-                    print(f"ChibiClip: Header bytes of {photo_path}: {file_header_bytes_hex}")
+                    print(f"ChibiClip: First 16 header bytes of {photo_path}: {file_header_bytes_hex}")
             except Exception as e_read_header:
                 if self.verbose:
                     print(f"ChibiClip: Could not read header bytes from {photo_path}: {e_read_header}")
+            
+            # HEIC/HEIF check (common problematic format)
+            # Magic bytes for HEIC/HEIF variants (ftypheic, ftypheix, ftyphevc, ftyphevx)
+            # b'\x00\x00\x00\xNNftypheic' or similar
+            if file_header_bytes_hex.startswith("000000") and "6674797068656963" in file_header_bytes_hex: # ftypheic
+                 if self.verbose:
+                    print(f"ChibiClip: Detected HEIC/HEIF variant based on header: {file_header_bytes_hex}. Attempting conversion to PNG.")
+                 try:
+                    photo_path = self._to_png(photo_path) # Convert and update photo_path
+                    if self.verbose:
+                        print(f"ChibiClip: Successfully converted HEIC to PNG: {photo_path}")
+                    # Re-check header after conversion
+                    with open(photo_path, "rb") as f_check_header_after_conv:
+                        file_header_bytes_hex = f_check_header_after_conv.read(16).hex()
+                    if self.verbose:
+                        print(f"ChibiClip: First 16 header bytes of new PNG {photo_path}: {file_header_bytes_hex}")
+                 except RuntimeError as e_heic_conv:
+                    raise ValueError(f"ChibiClip: HEIC/HEIF file detected but conversion to PNG failed: {e_heic_conv}")
+
+            # Use imghdr for a quick check
+            image_type_imghdr = imghdr.what(photo_path)
+            if self.verbose:
+                print(f"ChibiClip: imghdr.what('{photo_path}') detected type: {image_type_imghdr}")
+
+            if image_type_imghdr is None:
+                if self.verbose:
+                    print(f"ChibiClip: imghdr could not identify image type for {photo_path}. This might be an unsupported format (e.g., WebP before Pillow 10, AVIF) or not an image. Attempting conversion to PNG as a fallback.")
+                try:
+                    photo_path = self._to_png(photo_path) # Convert and update photo_path
+                    image_type_imghdr = imghdr.what(photo_path) # Re-check
+                    if self.verbose:
+                        print(f"ChibiClip: Post-conversion, imghdr detected: {image_type_imghdr} for {photo_path}")
+                    if image_type_imghdr is None:
+                         raise ValueError(f"ChibiClip: File {photo_path} is not a recognized image even after attempting PNG conversion. Header: {file_header_bytes_hex}.")
+                except RuntimeError as e_conv_fallback:
+                    raise ValueError(f"ChibiClip: Fallback conversion to PNG failed for {photo_path}: {e_conv_fallback}. Original header: {file_header_bytes_hex}.")
+
+            # Further validation using python-magic and 'file' command if available (existing logic)
+            file_type_confirmed_by_tool = False
+            detected_mime_type = f"image/{image_type_imghdr}" if image_type_imghdr else "unknown"
 
             if MAGIC_AVAILABLE:
                 try:
@@ -1238,16 +1349,16 @@ class ChibiClipGenerator:
             if not file_type_confirmed_by_tool:
                 error_msg = (
                     f"ChibiClip: Initial validation failed: Cannot confirm '{photo_path}' is a valid image file. "
-                    f"Detected MIME (by tools): {detected_mime_type}. "
+                    f"imghdr type: {image_type_imghdr}. Detected MIME (by other tools): {detected_mime_type}. "
                     f"PIL could open: {pil_can_open} (format guess: {pil_format_guess}). "
-                    f"File header: {file_header_bytes_hex}."
+                    f"First 16 Bytes Hex: {file_header_bytes_hex}." # Updated to use the 16-byte hex
                 )
                 if self.verbose: print(error_msg)
                 raise ValueError(error_msg)
             
             if self.verbose:
-                print(f"ChibiClip: Initial validation passed for {photo_path}. Confirmed image type. Best guess MIME: {detected_mime_type}")
-            # ===== END OF NEW INITIAL VALIDATION BLOCK =====
+                print(f"ChibiClip: Initial validation passed for {photo_path}. Confirmed image type (imghdr: {image_type_imghdr}). Best guess MIME: {detected_mime_type}")
+            # ===== END OF ENHANCED INITIAL VALIDATION BLOCK =====
 
             from io import BytesIO # Ensure BytesIO is imported for this scope
             
@@ -1325,6 +1436,7 @@ class ChibiClipGenerator:
                                 with open(temp_image_path, "rb") as f_temp_debug:
                                     image_content = BytesIO(f_temp_debug.read())
                                 image_content.seek(0) # Reset for further processing
+                                if self.verbose: print(f"ChibiClip: Recreated BytesIO from {temp_image_path} and called seek(0).")
 
                             except Exception as img_load_error:
                                 if self.verbose:
@@ -1354,6 +1466,7 @@ class ChibiClipGenerator:
                                     with open(converted_png_path, "rb") as f_converted:
                                         image_content = BytesIO(f_converted.read())
                                     image_content.seek(0)
+                                    if self.verbose: print(f"ChibiClip: Recreated BytesIO from converted PNG {converted_png_path} and called seek(0).")
                                     # photo_path = converted_png_path # Update photo_path if we use this
                                 except Exception as pil_convert_error_deep:
                                     if self.verbose: print(f"ChibiClip: Direct PIL conversion also failed: {pil_convert_error_deep}")
@@ -1363,7 +1476,7 @@ class ChibiClipGenerator:
                             raise ValueError(f"ChibiClip: Could not save debug image for {photo_path}: {pil_error}") from file_error_debug_save
                     
                     image_content.seek(0) # Ensure pointer is at the start for _preprocess_image_for_openai
-                    
+                    if self.verbose: print(f"ChibiClip: Called seek(0) on image_content before passing to OpenAI preprocessing.")
                 except Exception as img_error_main_processing: # Catch errors from the main PIL processing block
                     if self.verbose:
                         print(f"ChibiClip: Critical image verification/processing error for {photo_path}: {img_error_main_processing}")

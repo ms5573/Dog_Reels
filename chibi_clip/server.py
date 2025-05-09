@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, abort, send_from_directory
+from flask import Flask, request, jsonify, abort, send_from_directory, render_template
 import os
 import uuid
 import tempfile # For secure temporary file creation
@@ -99,6 +99,10 @@ def allowed_file(filename):
 @app.route('/images/<filename>')
 def serve_image(filename):
     return send_from_directory(OUTPUT_DIR, filename)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 @app.route("/generate", methods=["POST"])
 def generate_route(): # Renamed from generate to avoid conflict with module

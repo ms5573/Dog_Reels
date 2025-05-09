@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useState, useRef } from "react"
-import { Upload, X } from "lucide-react"
+import { Upload, X, Camera, Image, ArrowRight, MessageSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
@@ -86,19 +86,28 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="space-y-2">
-        <Label htmlFor="dogPhoto" className="text-lg font-medium">
-          Upload a Photo of Your Dog
+      <div className="text-center mb-4">
+        <h2 className="text-2xl font-bold text-purple-600 mb-1">
+          Create Your Dog's Birthday Card
+        </h2>
+        <p className="text-gray-600">Fill out the form below to get started!</p>
+      </div>
+      
+      <div className="space-y-3">
+        <Label htmlFor="dogPhoto" className="text-lg font-medium text-purple-800 flex items-center gap-2">
+          <Camera className="h-5 w-5" /> Upload a Photo of Your Dog
         </Label>
 
         {!previewUrl ? (
           <div
-            className="border-2 border-dashed border-purple-300 rounded-lg p-8 text-center cursor-pointer hover:bg-purple-50 transition-colors"
+            className="border-2 border-dashed border-purple-400 bg-purple-50 rounded-lg p-8 text-center cursor-pointer hover:bg-purple-100 transition-colors"
             onClick={() => fileInputRef.current?.click()}
           >
-            <Upload className="mx-auto h-12 w-12 text-purple-400 mb-2" />
-            <p className="text-sm text-gray-600 mb-1">Click to upload or drag and drop</p>
-            <p className="text-xs text-gray-500">JPG, PNG (Max 5MB)</p>
+            <div className="bg-white w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3 shadow-md">
+              <Upload className="h-8 w-8 text-purple-500" />
+            </div>
+            <p className="text-purple-700 font-medium mb-1">Click to upload or drag and drop</p>
+            <p className="text-sm text-purple-600">JPG, PNG (Max 5MB)</p>
             <input
               id="dogPhoto"
               ref={fileInputRef}
@@ -109,16 +118,22 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
             />
           </div>
         ) : (
-          <div className="relative">
+          <div className="relative rounded-lg overflow-hidden border-2 border-purple-300 shadow-md">
             <img
               src={previewUrl || "/placeholder.svg"}
               alt="Dog preview"
-              className="w-full h-48 object-contain rounded-lg border border-purple-200"
+              className="w-full h-56 object-cover"
             />
+            <div className="absolute inset-0 bg-gradient-to-t from-purple-900/60 to-transparent flex items-end">
+              <div className="p-3 text-white">
+                <p className="font-medium">Your dog looks great!</p>
+                <p className="text-sm text-purple-100">Ready to become an animated star</p>
+              </div>
+            </div>
             <button
               type="button"
               onClick={clearFile}
-              className="absolute top-2 right-2 bg-red-500 text-white p-1 rounded-full hover:bg-red-600"
+              className="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full hover:bg-red-600 shadow-md"
             >
               <X className="h-4 w-4" />
             </button>
@@ -126,27 +141,31 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
         )}
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="message" className="text-lg font-medium">
-          Birthday Message
+      <div className="space-y-3">
+        <Label htmlFor="message" className="text-lg font-medium text-purple-800 flex items-center gap-2">
+          <MessageSquare className="h-5 w-5" /> Birthday Message
         </Label>
         <Textarea
           id="message"
-          placeholder="Enter your birthday message here..."
+          placeholder="Write a heartfelt birthday wish here..."
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          className="min-h-[100px] resize-y"
+          className="min-h-[100px] resize-y border-2 border-purple-300 focus:border-purple-500 rounded-lg p-3"
         />
       </div>
 
-      {error && <div className="text-red-500 text-sm">{error}</div>}
+      {error && (
+        <div className="text-red-500 text-sm p-3 bg-red-50 border border-red-200 rounded-lg">
+          {error}
+        </div>
+      )}
 
       <Button
         type="submit"
-        className="w-full bg-purple-600 hover:bg-purple-700"
+        className="w-full bg-purple-600 hover:bg-purple-700 text-lg py-3 rounded-lg shadow-md"
         disabled={!selectedFile || !message.trim()}
       >
-        Create My Birthday Card!
+        Create My Dog's Birthday Card! <ArrowRight className="ml-2 h-5 w-5" />
       </Button>
     </form>
   )

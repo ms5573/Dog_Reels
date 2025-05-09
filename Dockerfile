@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     imagemagick \
     build-essential \
+    libmagic1 \
+    file \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

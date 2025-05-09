@@ -16,8 +16,22 @@ from urllib.parse import urlparse
 import shutil
 from PIL import Image
 import io
-import magic
-import subprocess
+
+# Try to import magic but don't fail if it's not available
+try:
+    import magic
+    MAGIC_AVAILABLE = True
+except ImportError:
+    print("Warning: python-magic or libmagic is not available. File type detection will be limited.")
+    MAGIC_AVAILABLE = False
+
+# Try to import subprocess for file command but don't fail if it's not available
+try:
+    import subprocess
+    SUBPROCESS_AVAILABLE = True
+except ImportError:
+    print("Warning: subprocess module is not available. File command will not be used.")
+    SUBPROCESS_AVAILABLE = False
 
 # Load environment variables for Celery
 from dotenv import load_dotenv
@@ -132,16 +146,22 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                         
                         # Additional file type verification
                         try:
-                            mime = magic.Magic(mime=True)
-                            detected_type = mime.from_file(photo_path)
-                            print(f"Detected MIME type: {detected_type}")
-                            
-                            # If not detected as an image, try using file command
-                            if not detected_type.startswith('image/'):
+                            if MAGIC_AVAILABLE:
+                                mime = magic.Magic(mime=True)
+                                detected_type = mime.from_file(photo_path)
+                                print(f"Detected MIME type: {detected_type}")
+                                
+                                # If not detected as an image, try using file command
+                                if not detected_type.startswith('image/'):
+                                    if SUBPROCESS_AVAILABLE:
+                                        result = subprocess.run(['file', photo_path], capture_output=True, text=True)
+                                        print(f"File command output: {result.stdout}")
+                            elif SUBPROCESS_AVAILABLE:
+                                # Fallback to just using the file command if magic is not available
                                 result = subprocess.run(['file', photo_path], capture_output=True, text=True)
-                                print(f"File command output: {result.stdout}")
-                        except ImportError:
-                            print("Magic library not available, skipping MIME detection")
+                                print(f"File command output (fallback): {result.stdout}")
+                            else:
+                                print("Neither magic nor file command available for type detection")
                         except Exception as e:
                             print(f"Error detecting file type: {e}")
                     else:

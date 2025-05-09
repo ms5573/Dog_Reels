@@ -1234,12 +1234,19 @@ class ChibiClipGenerator:
                         print(f"Photo path: {photo_path}, exists: {os.path.exists(photo_path)}, size: {os.path.getsize(photo_path) if os.path.exists(photo_path) else 'N/A'}")
                         
                         # Try to get more info about the file
-                        import subprocess
                         try:
-                            result = subprocess.run(['file', photo_path], capture_output=True, text=True)
-                            print(f"File command output: {result.stdout}")
-                        except Exception as file_cmd_error:
-                            print(f"Could not run 'file' command: {file_cmd_error}")
+                            import subprocess
+                            try:
+                                # Check if file command is available
+                                subprocess.run(['which', 'file'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                
+                                # File command is available, use it
+                                result = subprocess.run(['file', photo_path], capture_output=True, text=True)
+                                print(f"File command output: {result.stdout}")
+                            except (subprocess.SubprocessError, FileNotFoundError):
+                                print("'file' command not available on system")
+                        except ImportError:
+                            print("subprocess module not available")
                     
                     # Try loading the image directly without BytesIO
                     try:

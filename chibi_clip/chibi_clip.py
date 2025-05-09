@@ -206,59 +206,69 @@ class ChibiClipGenerator:
     # Helper method to preprocess image for OpenAI
     def _preprocess_image_for_openai(self, image_content: BytesIO, max_size_mb=3.5) -> BytesIO:
         """
-        Preprocesses an image to make it compatible with OpenAI's API.
-        Resizes and compresses if needed to stay under the size limit.
+        Preprocess image for OpenAI API by:
+        1. Ensuring it's a PNG with transparency (RGBA mode)
+        2. Resizing if needed to keep within size limits
+        3. Ensuring proper format for OpenAI's API
+
+        OpenAI's image-edits endpoint requires:
+        - PNG format with transparency (RGBA mode)
+        - Square image is best
+        - File size under 4MB
         """
         if self.verbose:
             print("Preprocessing image for OpenAI API...")
         
-        # Get the original size in MB
-        original_size = len(image_content.getvalue()) / (1024 * 1024)
-        
+        # Check initial size
+        initial_size = len(image_content.getvalue()) / (1024 * 1024)
         if self.verbose:
-            print(f"Original image size: {original_size:.2f} MB")
+            print(f"Original image size: {initial_size:.2f} MB")
         
-        # If image is already small enough, return as is
-        if original_size <= max_size_mb:
-            if self.verbose:
-                print("Image already under size limit, no preprocessing needed.")
-            # Reset the position to the beginning of the buffer
-            image_content.seek(0)
-            return image_content
-        
-        # Load the image with PIL
+        # Reset the BytesIO pointer to the start
         image_content.seek(0)
-        img = Image.open(image_content)
         
-        # Calculate the scale factor to reduce size
-        scale_factor = (max_size_mb / original_size) ** 0.5
-        new_width = int(img.width * scale_factor)
-        new_height = int(img.height * scale_factor)
-        
-        if self.verbose:
-            print(f"Resizing image from {img.width}x{img.height} to {new_width}x{new_height}")
-        
-        # Resize the image
-        img = img.resize((new_width, new_height), Image.LANCZOS)
-        
-        # Convert to RGB if it's RGBA (some PNG files)
-        if img.mode == 'RGBA':
+        # Load image with PIL
+        try:
+            img = Image.open(image_content)
+            orig_format = img.format
             if self.verbose:
-                print("Converting from RGBA to RGB")
-            img = img.convert('RGB')
+                print(f"Image format: {orig_format}, Mode: {img.mode}, Size: {img.size}")
+        except Exception as e:
+            if self.verbose:
+                print(f"Error loading image: {e}")
+            raise ValueError(f"Could not load image: {e}")
         
-        # Save to a new BytesIO buffer with compression
-        processed_buffer = BytesIO()
-        img.save(processed_buffer, format='JPEG', quality=85)
-        processed_buffer.seek(0)
+        # Convert to RGBA mode (with transparency) - required for OpenAI image edits
+        if img.mode != 'RGBA':
+            if self.verbose:
+                print(f"Converting image from {img.mode} to RGBA mode")
+            img = img.convert('RGBA')
         
-        # Mark this buffer as containing JPEG
-        processed_buffer._is_jpeg = True
-        
-        processed_size = len(processed_buffer.getvalue()) / (1024 * 1024)
-        if self.verbose:
-            print(f"Preprocessed image size: {processed_size:.2f} MB")
+        # Resize if needed to reduce file size
+        while True:
+            # Save to a new BytesIO buffer
+            processed_buffer = BytesIO()
+            img.save(processed_buffer, format='PNG')
+            processed_buffer.seek(0)
             
+            processed_size = len(processed_buffer.getvalue()) / (1024 * 1024)
+            if self.verbose:
+                print(f"Processed image size: {processed_size:.2f} MB")
+            
+            # Check if size is within limit
+            if processed_size <= max_size_mb:
+                break
+            
+            # Resize if too large (reduce by 25% each time)
+            new_width = int(img.width * 0.75)
+            new_height = int(img.height * 0.75)
+            if self.verbose:
+                print(f"Resizing image from {img.width}x{img.height} to {new_width}x{new_height}")
+            img = img.resize((new_width, new_height))
+        
+        if self.verbose:
+            print(f"Final image mode: {img.mode}, Size: {img.size}, File size: {processed_size:.2f} MB")
+        
         return processed_buffer
 
     # Step 4: OpenAI image-editing wrapper (updated to support dimensions and retries)
@@ -273,7 +283,7 @@ class ChibiClipGenerator:
                 print(f"Warning: Image size {image_size} not supported by OpenAI. Defaulting to 1024x1024.")
             image_size = "1024x1024"
         
-        # Preprocess the image to ensure it's not too large
+        # Preprocess the image to ensure it's not too large and in the right format (PNG with transparency)
         processed_image = self._preprocess_image_for_openai(image_content)
         
         headers = {
@@ -282,9 +292,9 @@ class ChibiClipGenerator:
         
         image_bytes = processed_image.getvalue()
         
-        # Determine proper content type based on preprocessing
-        content_type = 'image/jpeg' if hasattr(processed_image, '_is_jpeg') else 'image/png'
-        extension = '.jpg' if content_type == 'image/jpeg' else '.png'
+        # Always use PNG format for image-edits endpoint
+        content_type = 'image/png'
+        extension = '.png'
         
         if self.verbose:
             print(f"Using image format: {content_type}")

@@ -7,8 +7,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadingIndicator = document.getElementById('loadingIndicator');
     const videoResultDiv = document.getElementById('videoResult');
     const errorResultDiv = document.getElementById('errorResult');
-    const toggleAdvancedButton = document.getElementById('toggleAdvanced');
-    const advancedOptionsDiv = document.getElementById('advancedOptions');
 
     // Trigger file input when custom upload area is clicked
     if (fileUploadArea) {
@@ -39,15 +37,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    // Toggle advanced options
-    if (toggleAdvancedButton) {
-        toggleAdvancedButton.addEventListener('click', () => {
-            const isHidden = advancedOptionsDiv.style.display === 'none';
-            advancedOptionsDiv.style.display = isHidden ? 'block' : 'none';
-            toggleAdvancedButton.textContent = isHidden ? 'Hide Advanced Options 🔼' : 'Show Advanced Options 👇';
-        });
-    }
-
     if (form) {
         form.addEventListener('submit', async (event) => {
             event.preventDefault();
@@ -68,22 +57,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 // The chibi_clip.py doesn't use birthdayMessage in prompts, so it's truly optional
                 // No need to add it if empty.
             }
-
-            // Default action if not set (though HTML select has a default)
-            if (!formData.has('action')) {
-                formData.set('action', 'birthday-dance');
-            }
-            if (!formData.has('ratio')) {
-                formData.set('ratio', '9:16');
-            }
-            if (!formData.has('extended_duration')) {
-                formData.set('extended_duration', '15'); // Default from HTML
-            }
-            // 'use_default_audio' is a checkbox, its value will be 'on' or absent.
-            // The server handles "false".lower() == "true" for string false.
-            // For FormData, unchecked checkboxes are not included.
-            // If we want to explicitly send false if unchecked: Needs custom handling, 
-            // but server default logic for get("param", "false") should be okay.
 
             try {
                 const response = await fetch('/generate', {
@@ -112,19 +85,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 let resultHTML = '';
-                if (result.video_url) {
-                     // Assuming server returns a path like /videos/filename.mp4
-                    resultHTML += `<h3>Video Ready!</h3><video controls src="${result.video_url}"></video>`;
+                // Prioritize local_video_url (the extended one) if available
+                const displayVideoUrl = result.local_video_url || result.video_url; 
+
+                if (displayVideoUrl) {
+                     resultHTML += `<h3>Video Ready!</h3><video controls src="${displayVideoUrl}"></video>`;
                 }
-                if (result.image_url && !result.video_url) { // if only image was generated (e.g. error before video)
-                     // Assuming server returns a path like /images/filename.png
+                // Fallback for image if video URL isn't primary
+                else if (result.image_url) { 
                     resultHTML += `<h3>Image Preview:</h3><img src="${result.image_url}" alt="Generated Image">`;
                 }
-                if (result.public_image_url_for_display && !result.video_url && !result.image_url) {
+                else if (result.public_image_url_for_display) { // Likely an alias for image_url if served locally
                     resultHTML += `<h3>Image Stored:</h3><img src="${result.public_image_url_for_display}" alt="Generated Image">`;
                 }
                 
-                resultHTML += `<p>You can share this link: <a href="${result.video_url || result.image_url || result.public_image_url_for_display}" target="_blank">${result.video_url || result.image_url || result.public_image_url_for_display}</a></p>`;
+                // The share link should also prioritize the video URL that's being displayed
+                const shareUrl = displayVideoUrl || result.image_url || result.public_image_url_for_display;
+                if (shareUrl) {
+                    resultHTML += `<p>You can share this link: <a href="${shareUrl}" target="_blank">${shareUrl}</a></p>`;
+                }
                 
                 if (result.message) {
                     resultHTML += `<p>${result.message}</p>`;

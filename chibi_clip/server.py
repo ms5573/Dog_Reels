@@ -119,7 +119,7 @@ def generate_route(): # Renamed from generate to avoid conflict with module
     if not file or not allowed_file(file.filename):
         return jsonify({"error": "Invalid file type. Allowed: png, jpg, jpeg, gif"}), 400
 
-    action = request.form.get("action", "running")
+    action = request.form.get("action", "birthday-dance")
     ratio = request.form.get("ratio", "9:16")
     try:
         duration = int(request.form.get("duration", 5))

@@ -121,6 +121,7 @@ def generate_route(): # Renamed from generate to avoid conflict with module
 
     action = request.form.get("action", "birthday-dance")
     ratio = request.form.get("ratio", "9:16")
+    birthday_message = request.form.get("birthdayMessage", None) # Get the birthday message
     try:
         duration = int(request.form.get("duration", 5))
     except ValueError:
@@ -198,7 +199,8 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 duration=duration,
                 audio_path=audio_path,
                 extended_duration=extended_duration,
-                use_local_storage=use_local_storage
+                use_local_storage=use_local_storage,
+                birthday_message=birthday_message # Pass the message
             )
             app.logger.info(f"Processing successful: {result}")
             

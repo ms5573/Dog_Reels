@@ -6,6 +6,7 @@ import base64
 from io import BytesIO
 import urllib.request
 import tempfile
+import numpy as np
 from PIL import Image
 # Import specific modules from moviepy
 from moviepy.video.io.VideoFileClip import VideoFileClip
@@ -13,10 +14,86 @@ from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.audio.AudioClip import AudioClip
 from moviepy.audio.AudioClip import concatenate_audioclips  # Add proper import for audio concatenation
+from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip # Ensure this is imported
+from moviepy.video.VideoClip import ImageClip, TextClip # Import ImageClip and TextClip
+# Import resize with fallback for newer PIL versions
+try:
+    from moviepy.video.fx.resize import resize
+except Exception as e:
+    # Create a custom resize function that works with newer PIL versions
+    def resize(clip, width=None, height=None, newsize=None):
+        """
+        Resizes a clip to a new resolution.
+        
+        Parameters
+        ----------
+        clip : VideoClip
+            A video clip
+        width : int, optional
+            New width of the clip
+        height : int, optional
+            New height of the clip
+        newsize : tuple, optional
+            New size (width, height) of the clip
+            
+        Returns
+        -------
+        clip : VideoClip
+            A clip with the new resolution
+        """
+        from moviepy.video.fx.resize import resize_func
+        from PIL import Image
+        
+        if newsize is not None:
+            width, height = newsize
+        elif width is not None:
+            if height is None:
+                height = int(clip.h * width / clip.w)
+        elif height is not None:
+            if width is None:
+                width = int(clip.w * height / clip.h)
+        else:
+            return clip  # No resizing needed
+            
+        newsize = (width, height)
+        
+        # Get the proper resampling filter
+        resample_filter = None
+        # Check which PIL/Pillow constants are available
+        if hasattr(Image, 'LANCZOS'):
+            resample_filter = Image.LANCZOS
+        elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'LANCZOS'):
+            resample_filter = Image.Resampling.LANCZOS
+        elif hasattr(Image, 'ANTIALIAS'):
+            resample_filter = Image.ANTIALIAS
+        else:
+            # Fallback to BICUBIC
+            if hasattr(Image, 'BICUBIC'):
+                resample_filter = Image.BICUBIC
+            elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'BICUBIC'):
+                resample_filter = Image.Resampling.BICUBIC
+                
+        # Custom resize function that uses the determined resampling filter
+        def resizer(pic, newsize):
+            newpic = Image.fromarray(pic)
+            newpic = newpic.resize(newsize[::-1], resample_filter)
+            return np.array(newpic)
+            
+        # Apply the resize
+        newclip = clip.fl_image(lambda pic: resizer(pic.astype('uint8'), newsize))
+        
+        if hasattr(clip, 'fps'):
+            newclip.fps = clip.fps
+        if hasattr(clip, 'audio'):
+            newclip.audio = clip.audio
+            
+        return newclip
+
 # Import these directly from the moviepy package
 import moviepy
 # argparse and random will be imported in their respective scopes
 import uuid
+import shutil
 
 # Step 6: Runway helpers (constants)
 RATIO_MAP = {
@@ -458,6 +535,79 @@ class ChibiClipGenerator:
                 try:
                     error_details = e.response.json()
                     error_message += f" - Details: {error_details}"
+                    
+                    # Check for the specific "Failed to fetch asset" error with 502 status
+                    if img_url.startswith("http") and "Failed to fetch asset" in str(error_details) and "502" in str(error_details):
+                        if self.verbose:
+                            print(f"Runway couldn't access the image URL due to a 502 error. Trying with data URI instead.")
+                        
+                        try:
+                            # Attempt to download the image from the URL
+                            if self.verbose:
+                                print(f"Downloading image from URL: {img_url}")
+                            
+                            # Create a temporary file to save the image
+                            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                            temp_path = temp_file.name
+                            temp_file.close()
+                            
+                            # Use requests instead of urllib for better error handling
+                            response = requests.get(img_url, timeout=30)
+                            response.raise_for_status()
+                            
+                            # Save the image content
+                            with open(temp_path, 'wb') as f:
+                                f.write(response.content)
+                            
+                            if os.path.exists(temp_path):
+                                if self.verbose:
+                                    print(f"Downloaded image to temporary file: {temp_path}")
+                                
+                                # Read the image from the temp file
+                                with open(temp_path, "rb") as f:
+                                    image_data = f.read()
+                                
+                                # Convert to base64
+                                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                                
+                                # Default to PNG mime type since we saved as PNG
+                                mime_type = "image/png"
+                                
+                                # Create a data URI directly
+                                img_url = f"data:{mime_type};base64,{image_base64}"
+                                
+                                # Update payload with new data URI
+                                payload["promptImage"] = img_url
+                                
+                                if self.verbose:
+                                    display_url = f"{img_url[:30]}...{img_url[-10:]}" 
+                                    print(f"Retrying with data URI (length: {len(img_url)} characters)")
+                                
+                                # Try again with data URI
+                                resp = requests.post(
+                                    "https://api.dev.runwayml.com/v1/image_to_video", 
+                                    headers=headers,
+                                    json=payload,
+                                    timeout=30,
+                                )
+                                resp.raise_for_status()
+                                task_id = resp.json()["id"]
+                                if self.verbose:
+                                    print(f"Runway video generation task started with data URI. Task ID: {task_id}")
+                                
+                                # Clean up temp file
+                                try:
+                                    os.unlink(temp_path)
+                                except Exception as clean_err:
+                                    if self.verbose:
+                                        print(f"Warning: Could not delete temp file {temp_path}: {clean_err}")
+                                    
+                                return task_id
+                        except Exception as download_err:
+                            if self.verbose:
+                                print(f"Error trying to use data URI fallback: {download_err}")
+                                print("Continuing with original error")
+                
                 except json.JSONDecodeError:
                     error_message += f" - Response content: {e.response.text}"
             if self.verbose:
@@ -527,84 +677,143 @@ class ChibiClipGenerator:
         if self.verbose: print(timeout_msg)
         raise TimeoutError(timeout_msg)
 
-    # New method to add music to a video
-    def add_music_to_video(self, video_url, audio_path, output_path=None, total_duration=45):
+    # Step 7b: Music addition helper method
+    def add_music_to_video(self, video_url, audio_path, output_path=None, total_duration=45, birthday_message=None):
+        """
+        Adds music to a video, adjusting if needed to match the desired duration.
+        If the video is shorter than total_duration, it's looped.
+        If the audio is shorter than total_duration, it's looped.
+        
+        Args:
+            video_url (str): URL or path to the video file
+            audio_path (str): Path to the audio file
+            output_path (str, optional): Path where the output will be saved
+            total_duration (int, optional): Target duration in seconds. Defaults to 45.
+            birthday_message (str, optional): Birthday message to add to the card slate
+            
+        Returns:
+            str: Path to the output file
+        """
         if self.verbose:
             print(f"Adding music from {audio_path} to video at {video_url}")
             print(f"Target total duration: {total_duration} seconds")
-        
-        if not os.path.exists(audio_path):
-            error_msg = f"Audio file not found at path: {audio_path}"
-            if self.verbose:
-                print(error_msg)
-            raise FileNotFoundError(error_msg)
-        
-        video_clip_obj = None # Ensure it's defined for finally block
-        audio_obj = None    # Ensure it's defined for finally block
-        final_video_obj = None # Ensure it's defined for finally block
+            if birthday_message:
+                print(f"Birthday message to add: {birthday_message}")
         
         try:
-            # Create temporary directory to store downloaded video
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Download the video if it's a URL
-                video_path = os.path.join(temp_dir, "temp_video.mp4")
-                if self.verbose:
-                    print(f"① Downloading video from {video_url} to {video_path}")
+            # Create a temp dir for working files
+            temp_dir = tempfile.mkdtemp()
+            video_clip_obj = None
+            audio_obj = None
+            final_animated_video_obj = None
+            final_video_to_write = None
+            
+            if self.verbose:
+                print(f"① Downloading video from {video_url} to {os.path.join(temp_dir, 'temp_video.mp4')}")
+            
+            # First, download the video file to a temp location
+            video_path = os.path.join(temp_dir, "temp_video.mp4")
+            
+            # Handle different URL types (http, file, local path)
+            if video_url.startswith(('http://', 'https://')):
+                # Remote URL - use urllib
                 urllib.request.urlretrieve(video_url, video_path)
-                
-                # Load the video clip
-                if self.verbose:
-                    print(f"② Loading video with VideoFileClip from: {video_path}")
+            elif video_url.startswith('file://'):
+                # Local file URL - copy the file
+                local_path = video_url[7:]  # Remove file:// prefix
+                shutil.copyfile(local_path, video_path)
+            else:
+                # Assume it's already a local file path
+                if os.path.exists(video_url):
+                    shutil.copyfile(video_url, video_path)
+                else:
+                    raise ValueError(f"Invalid video_url: {video_url}. Not a valid URL or file path.")
+            
+            # Load the video clip
+            if self.verbose:
+                print(f"② Loading video with VideoFileClip from: {video_path}")
+            try:
                 video_clip_obj = VideoFileClip(video_path)
-
                 if self.verbose:
                     print(f"   Type of video_clip_obj: {type(video_clip_obj)}")
                     if hasattr(video_clip_obj, 'subclip') and callable(getattr(video_clip_obj, 'subclip')):
-                        print("   DEBUG: video_clip_obj HAS a callable 'subclip' attribute.")
+                        print(f"   DEBUG: video_clip_obj HAS a callable 'subclip' attribute.")
                     else:
-                        print("   DEBUG: video_clip_obj DOES NOT HAVE a callable 'subclip' attribute.")
-                        # Forcing an error here if it doesn't have subclip, to make it super clear
-                        raise AttributeError(f"Instance of {type(video_clip_obj)} loaded from {video_path} does not have a callable 'subclip' method.")
-
-                original_duration = video_clip_obj.duration
+                        print(f"   ERROR: video_clip_obj does NOT have a callable 'subclip' attribute.")
+                        
+                if video_clip_obj.audio is not None:
+                    video_clip_obj = video_clip_obj.without_audio()
+            except Exception as e:
                 if self.verbose:
-                    print(f"③ Original clip duration: {original_duration:.2f} seconds")
+                    print(f"   ERROR loading VideoFileClip: {e}")
+                raise RuntimeError(f"Error loading video file: {e}") from e
 
-                clips_for_concatenation = []
-                accumulated_duration = 0.0
-                loop_count = 0
+            # Get the original duration
+            original_duration = video_clip_obj.duration
+            if self.verbose:
+                print(f"③ Original clip duration: {original_duration:.2f} seconds")
 
+            # If the video is shorter than target_duration, we'll loop it
+            if original_duration < total_duration:
                 if self.verbose:
                     print(f"   Starting loop to create video of {total_duration}s duration.")
 
+                # Initialize tracking variables for the loop
+                clips_for_concatenation = []
+                accumulated_duration = 0
+                loop_count = 0
+
+                # Keep adding segments until we reach total_duration
                 while accumulated_duration < total_duration:
                     loop_count += 1
                     remaining_needed = total_duration - accumulated_duration
+                    
+                    # Determine the duration for this specific segment
                     duration_this_segment = min(original_duration, remaining_needed)
+
+                    # If this segment will be a FULL loop of the original clip (i.e., not the potentially shorter final segment)
+                    # AND if it's not the very last piece needed (to avoid trimming the very end)
+                    # then trim a tiny fraction from the end to potentially smooth the loop transition.
+                    trim_end_offset = 0.05 # Trim 50ms (adjust if needed)
+                    subclip_end_time = duration_this_segment
+                    # Check if this segment covers most of the original duration AND if adding another full original duration wouldn't exceed the total needed.
+                    if duration_this_segment >= original_duration - trim_end_offset and (accumulated_duration + original_duration < total_duration + trim_end_offset): # Added tolerance to condition
+                         subclip_end_time = original_duration - trim_end_offset
+                         if self.verbose:
+                             print(f"   Trimming end of full loop segment. Using duration: {subclip_end_time:.2f}s")
                     
                     if self.verbose:
-                        print(f"   Loop {loop_count}: Creating segment. Target duration for segment: {duration_this_segment:.2f}s.")
-
+                        print(f"   Loop {loop_count}: Creating segment. Target duration for segment: {subclip_end_time:.2f}s.")
+                        
                     # Create a segment from the original video clip object
-                    segment = video_clip_obj.subclip(0, duration_this_segment)
+                    segment = video_clip_obj.subclip(0, subclip_end_time) # Use adjusted end time
                     clips_for_concatenation.append(segment)
                     accumulated_duration += segment.duration 
                     if self.verbose:
                          print(f"   Loop {loop_count}: Segment created with duration {segment.duration:.2f}s. Accumulated: {accumulated_duration:.2f}s.")
 
-                if not clips_for_concatenation:
-                     raise ValueError("Video processing loop created no clips.")
-
+                # Concatenate all segments into the final video
                 if self.verbose:
                     print(f"④ Concatenating {len(clips_for_concatenation)} video segments.")
-                final_video_obj = concatenate_videoclips(clips_for_concatenation)
+                final_animated_video_obj = concatenate_videoclips(clips_for_concatenation, method="compose")
                 
-                # Load the audio
+            else:
+                # If the video is longer than target_duration, trim it
+                if self.verbose:
+                    print(f"④ Trimming video from {original_duration:.2f}s to {total_duration:.2f}s")
+                final_animated_video_obj = video_clip_obj.subclip(0, total_duration)
+                # Close the original clip to free up resources
+                video_clip_obj.close()
+                video_clip_obj = None
+
+            # Now handle the audio
+            if audio_path:
+                # Load the audio file
                 if self.verbose:
                     print(f"⑤ Loading audio from {audio_path}")
                 audio_obj = AudioFileClip(audio_path)
                 
-                # If audio is shorter than the target duration, loop it using ffmpeg
+                # If the audio is shorter than target_duration, loop it
                 if audio_obj.duration < total_duration:
                     if self.verbose:
                         print(f"⑥ Audio ({audio_obj.duration:.2f}s) is shorter than target ({total_duration}s). Looping with FFmpeg.")
@@ -649,26 +858,168 @@ class ChibiClipGenerator:
                     audio_obj = audio_obj.subclip(0, total_duration)
                 
                 if self.verbose:
-                    print(f"⑧ Setting audio (duration: {audio_obj.duration:.2f}s) to video (duration: {final_video_obj.duration:.2f}s)")
-                final_video_obj = final_video_obj.set_audio(audio_obj)
-                
-                if output_path is None:
-                    base_filename = "chibi_clip_with_music"
-                    output_path = f"{base_filename}_{int(time.time())}.mp4"
-                
+                    print(f"⑧ Setting audio (duration: {audio_obj.duration:.2f}s) to video (duration: {final_animated_video_obj.duration:.2f}s)")
+                final_animated_video_obj = final_animated_video_obj.set_audio(audio_obj)
+            
+            # --- BIRTHDAY CARD SLATE LOGIC START ---
+            final_video_to_write = final_animated_video_obj # Default to the animated video
+            card_slate = None 
+            backdrop_clip = None
+            txt_clip = None
+
+            if birthday_message and birthday_message.strip():
                 if self.verbose:
-                    print(f"⑨ Writing final video to {output_path}")
-                
-                final_video_obj.write_videofile(
-                    output_path, codec="libx264", audio_codec="aac", fps=24, logger=None
-                )
-                
-                if os.path.exists(output_path):
+                    print(f"INFO: Creating birthday card slate with message: '{birthday_message}'")
+                try:
+                    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+                    
+                    # Get the dimensions of the animated video to ensure consistent resolution
+                    video_width, video_height = final_animated_video_obj.size
+                    if self.verbose: 
+                        print(f"INFO: Animated video dimensions: {video_width}x{video_height}")
+                    
+                    # Choose the appropriate backdrop based on dimensions
+                    if video_width == 720 and video_height == 1280:
+                        # Use the pre-sized backdrop for 720x1280 videos
+                        backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
+                        if self.verbose:
+                            print(f"INFO: Using pre-sized backdrop (720x1280) for perfect fit")
+                    else:
+                        # Use the original backdrop for other dimensions
+                        backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
+                        if self.verbose:
+                            print(f"INFO: Using original backdrop that will need resizing")
+                    
+                    if not os.path.exists(backdrop_path):
+                        if self.verbose:
+                            print(f"WARNING: Selected backdrop image not found at {backdrop_path}. Trying alternative version.")
+                            if video_width == 720 and video_height == 1280:
+                                backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
+                            else:
+                                backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
+                                
+                            if not os.path.exists(backdrop_path):
+                                print(f"WARNING: Alternative backdrop image also not found. Skipping card slate.")
+                                raise FileNotFoundError(f"No backdrop images found in {assets_dir}")
+                    
+                    card_slate_duration = 5 # seconds
+                    if self.verbose: print(f"INFO: Loading backdrop image from {backdrop_path}")
+                    backdrop_clip = ImageClip(backdrop_path).set_duration(card_slate_duration)
+                    
+                    if self.verbose: print(f"INFO: Creating TextClip for message.")
+                    txt_clip = TextClip(birthday_message, 
+                                        fontsize=70, 
+                                        color='white', 
+                                        font='Arial-Bold', 
+                                        stroke_color='black', 
+                                        stroke_width=2,
+                                        method='caption',
+                                        size=(backdrop_clip.w * 0.8, None) 
+                                        )
+                    txt_clip = txt_clip.set_position('center').set_duration(card_slate_duration)
+                    
+                    if self.verbose: print(f"INFO: Compositing backdrop and text.")
+                    card_slate = CompositeVideoClip([backdrop_clip, txt_clip], size=backdrop_clip.size).set_duration(card_slate_duration)
+                    
+                    # Get the dimensions of the animated video to ensure consistent resolution
+                    video_width, video_height = final_animated_video_obj.size
+                    if self.verbose: 
+                        print(f"INFO: Animated video dimensions: {video_width}x{video_height}")
+                        print(f"INFO: Card slate dimensions: {card_slate.size[0]}x{card_slate.size[1]}")
+                        
+                    # Resize the card slate to match the animated video dimensions
+                    if card_slate.size != (video_width, video_height):
+                        if self.verbose: print(f"INFO: Resizing card slate to match video dimensions: {video_width}x{video_height}")
+                        
+                        try:
+                            # Use the improved resize function to handle newer PIL versions
+                            card_slate = resize(card_slate, width=video_width, height=video_height)
+                        except Exception as resize_error:
+                            if self.verbose:
+                                print(f"WARNING: Error with standard resize: {resize_error}")
+                                print("Falling back to custom resize implementation")
+                            
+                            # Custom resize implementation for compatibility
+                            def custom_resize(clip, target_width, target_height):
+                                # Get a resampling filter that exists in this PIL version
+                                resample_filter = None
+                                if hasattr(Image, 'LANCZOS'):
+                                    resample_filter = Image.LANCZOS
+                                elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'LANCZOS'):
+                                    resample_filter = Image.Resampling.LANCZOS
+                                elif hasattr(Image, 'ANTIALIAS'):
+                                    resample_filter = Image.ANTIALIAS
+                                else:
+                                    # Fallback to BICUBIC
+                                    if hasattr(Image, 'BICUBIC'):
+                                        resample_filter = Image.BICUBIC
+                                    elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'BICUBIC'):
+                                        resample_filter = Image.Resampling.BICUBIC
+                                    else:
+                                        # Last resort
+                                        resample_filter = 1  # BILINEAR
+
+                                # Function to resize a single frame
+                                def resizer(pic):
+                                    pic = pic.astype('uint8')
+                                    newpic = Image.fromarray(pic)
+                                    newpic = newpic.resize((target_width, target_height), resample_filter)
+                                    return np.array(newpic)
+                                
+                                # Apply resize to all frames
+                                resized_clip = clip.fl_image(resizer)
+                                
+                                # Preserve attributes
+                                if hasattr(clip, 'fps'):
+                                    resized_clip.fps = clip.fps
+                                if hasattr(clip, 'audio'):
+                                    resized_clip.audio = clip.audio
+                                    
+                                return resized_clip
+                            
+                            # Use the custom implementation
+                            card_slate = custom_resize(card_slate, video_width, video_height)
+                        
+                        if self.verbose:
+                            print(f"INFO: Card slate resized successfully to {card_slate.size}")
+
+                    if self.verbose: print(f"INFO: Concatenating card slate with animated video.")
+                    # Use method="compose" for smoother transitions between clips
+                    final_video_to_write = concatenate_videoclips([card_slate, final_animated_video_obj], method="compose")
                     if self.verbose:
-                        print(f"✅ Video with music saved to {output_path}")
-                    return output_path
-                else:
-                    raise RuntimeError(f"Failed to create video file at {output_path}")
+                        print(f"INFO: Birthday card slate created and prepended. New total duration approx: {final_video_to_write.duration:.2f}s")
+                except Exception as slate_e:
+                    if self.verbose:
+                        print(f"ERROR: Error creating birthday card slate: {slate_e}. Proceeding without it.")
+                    import traceback
+                    traceback.print_exc()
+            # --- BIRTHDAY CARD SLATE LOGIC END ---
+            
+            if output_path is None:
+                base_filename = "chibi_clip_with_music"
+                output_path = f"{base_filename}_{int(time.time())}.mp4"
+            
+            if self.verbose:
+                print(f"⑨ Writing final video to {output_path}")
+            
+            final_video_to_write.write_videofile(
+                output_path, 
+                codec="libx264", 
+                audio_codec="aac", 
+                fps=24, 
+                bitrate="8000k",
+                preset="medium",  # Balance between quality and encoding speed
+                threads=2,        # Use 2 threads for encoding
+                ffmpeg_params=["-pix_fmt", "yuv420p"],  # More compatible pixel format
+                logger=None
+            )
+            
+            if os.path.exists(output_path):
+                if self.verbose:
+                    print(f"✅ Video with music saved to {output_path}")
+                return output_path
+            else:
+                raise RuntimeError(f"Failed to create video file at {output_path}")
         except Exception as e:
             error_message = f"Error adding music to video: {e}"
             if self.verbose:
@@ -678,20 +1029,82 @@ class ChibiClipGenerator:
             raise RuntimeError(error_message) from e
         finally:
             if self.verbose: print("⑩ Cleaning up resources in finally block...")
-            if video_clip_obj: video_clip_obj.close()
-            if audio_obj: audio_obj.close()
-            if final_video_obj: final_video_obj.close()
+            # Safely close each resource in a try/except block to avoid errors
+            try:
+                if video_clip_obj: 
+                    video_clip_obj.close()
+                    if self.verbose: print("   Closed video_clip_obj")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error closing video_clip_obj: {e}")
+                
+            try:
+                if audio_obj: 
+                    audio_obj.close()
+                    if self.verbose: print("   Closed audio_obj")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error closing audio_obj: {e}")
+                
+            try:
+                if final_animated_video_obj: 
+                    final_animated_video_obj.close()
+                    if self.verbose: print("   Closed final_animated_video_obj")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error closing final_animated_video_obj: {e}")
+                
+            try:
+                # Ensure final_video_to_write is closed if it's a different object (i.e., if slate was added)
+                if final_video_to_write and final_video_to_write is not final_animated_video_obj: 
+                    final_video_to_write.close()
+                    if self.verbose: print("   Closed final_video_to_write")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error closing final_video_to_write: {e}")
+                
+            try:
+                if card_slate: 
+                    card_slate.close()
+                    if self.verbose: print("   Closed card_slate")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error closing card_slate: {e}")
+                
+            try:
+                if backdrop_clip: 
+                    backdrop_clip.close()
+                    if self.verbose: print("   Closed backdrop_clip")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error closing backdrop_clip: {e}")
+                
+            try:
+                if txt_clip: 
+                    txt_clip.close()
+                    if self.verbose: print("   Closed txt_clip")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error closing txt_clip: {e}")
+                
             # Also close clips in clips_for_concatenation if they are not closed by concatenate_videoclips
             if 'clips_for_concatenation' in locals():
-                for clip in clips_for_concatenation:
-                    if hasattr(clip, 'close') and callable(getattr(clip, 'close')):
-                        try: clip.close()
-                        except: pass # Ignore errors during cleanup
+                for i, clip in enumerate(clips_for_concatenation):
+                    try:
+                        if hasattr(clip, 'close') and callable(getattr(clip, 'close')):
+                            clip.close()
+                            if self.verbose: print(f"   Closed concatenation clip {i}")
+                    except Exception as e:
+                        if self.verbose: print(f"   Warning: Error closing concatenation clip {i}: {e}")
+            
+            # Clean up temp directory if it exists
+            try:
+                if 'temp_dir' in locals() and os.path.exists(temp_dir):
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    if self.verbose: print(f"   Removed temp directory: {temp_dir}")
+            except Exception as e:
+                if self.verbose: print(f"   Warning: Error removing temp directory: {e}")
 
     # Step 7: High-level orchestrator (Updated to handle local file URLs)
-    def process_clip(self, photo_path: str, action: str = "running", ratio: str = "9:16", duration: int = 5, audio_path: str = None, extended_duration: int = 45, use_local_storage=False):
+    def process_clip(self, photo_path: str, action: str = "running", ratio: str = "9:16", duration: int = 5, audio_path: str = None, extended_duration: int = 45, use_local_storage=False, birthday_message=None):
         if self.verbose:
             print(f"▶ Generating clip (source: {photo_path}, action: {action}, ratio: {ratio}, duration: {duration}s)…")
+            if birthday_message:
+                print(f"  With birthday message: {birthday_message}")
 
         # For birthday-dance action, force local storage and use birthday song
         if action == "birthday-dance":
@@ -770,7 +1183,8 @@ class ChibiClipGenerator:
                     video_url, 
                     audio_path, 
                     output_path=output_path, 
-                    total_duration=extended_duration
+                    total_duration=extended_duration,
+                    birthday_message=birthday_message
                 )
             else:
                 # For non-birthday themes without audio, download and save the video locally 

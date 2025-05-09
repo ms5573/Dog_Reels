@@ -1155,6 +1155,9 @@ class ChibiClipGenerator:
                         print("Birthday song not found at expected location. Will generate video without audio.")
 
         try:
+            # Import BytesIO here to ensure it's in scope
+            from io import BytesIO
+            
             prompt = self.generate_ai_prompt(action)
             
             if self.verbose:
@@ -1285,7 +1288,7 @@ class ChibiClipGenerator:
                                         original_data = f.read()
                                     
                                     # Force conversion to clean PNG
-                                    from io import BytesIO
+                                    from io import BytesIO  # Explicit import to ensure it's in this scope
                                     input_buffer = BytesIO(original_data)
                                     output_buffer = BytesIO()
                                     

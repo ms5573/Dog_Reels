@@ -1454,21 +1454,22 @@ class ChibiClipGenerator:
                     image_content.seek(0)
                     
                     try:
-                        img = Image.open(image_content)
-                        # ... (rest of your existing PIL processing logic from the user-provided snippet, starting from here) ...
-                        # ... This includes the nested try-except for Image.open(image_content), temp_image_path saving, etc. ...
-                        # ... Ensure it ends before the 'except Exception as img_error:' that catches failures of this block ...
-                        # For brevity, I'm not repeating the entire deeply nested block here.
-                        # The critical point is that the 'image_content = BytesIO(file_data)' above
-                        # is now using 'file_data' from a 'photo_path' that has passed initial validation.
-                        
-                        # Assuming the complex PIL opening logic starts here, as an example:
-                        img_format = img.format
-                        img_mode = img.mode
-                        img_size = img.size
-                        if self.verbose:
-                            print(f"ChibiClip: Successfully loaded image into BytesIO: format={img_format}, mode={img_mode}, size={img_size}")
-                        img.close()
+                        # Verify it's a valid image stream using Pillow, but don't let Image.open close image_content
+                        img_verify_pil_obj = None # Use a distinct variable name
+                        try:
+                            img_verify_pil_obj = Image.open(image_content) 
+                            img_format = img_verify_pil_obj.format
+                            img_mode = img_verify_pil_obj.mode
+                            img_size = img_verify_pil_obj.size
+                            if self.verbose:
+                                print(f"ChibiClip: Successfully loaded image into BytesIO: format={img_format}, mode={img_mode}, size={img_size}")
+                        finally:
+                            # Close only the PIL Image object, not the underlying BytesIO stream
+                            if img_verify_pil_obj:
+                                img_verify_pil_obj.close()
+
+                        # IMPORTANT: Reset the BytesIO stream to the beginning
+                        image_content.seek(0)
                     except Exception as pil_error:
                         if self.verbose:
                             print(f"ChibiClip: PIL Error opening BytesIO from validated file: {pil_error}")

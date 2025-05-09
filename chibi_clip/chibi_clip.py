@@ -95,6 +95,21 @@ import moviepy
 import uuid
 import shutil
 
+# Try to import magic and subprocess for file type detection
+try:
+    import magic
+    MAGIC_AVAILABLE = True
+except ImportError:
+    print("Warning: python-magic library not found or libmagic not installed. File type detection will be limited.")
+    MAGIC_AVAILABLE = False
+
+try:
+    import subprocess
+    SUBPROCESS_AVAILABLE = True
+except ImportError:
+    print("Warning: subprocess module not found. Fallback file type detection may be limited.")
+    SUBPROCESS_AVAILABLE = False
+
 # Step 6: Runway helpers (constants)
 RATIO_MAP = {
     "9:16": "720:1280",
@@ -850,9 +865,6 @@ class ChibiClipGenerator:
                     if self.verbose:
                         print(f"⑥ Audio ({audio_obj.duration:.2f}s) is shorter than target ({total_duration}s). Looping with FFmpeg.")
                     temp_audio_path = os.path.join(temp_dir, "extended_audio.mp3")
-                    import subprocess
-                    # Calculate the number of loops. Ensure it's an integer. Use ceil division idea.
-                    num_loops = -(-total_duration // audio_obj.duration) # Equivalent to math.ceil(total_duration / audio_obj.duration)
                     if self.verbose:
                         print(f"   Calculated number of loops for audio: {num_loops}")
 
@@ -1155,239 +1167,220 @@ class ChibiClipGenerator:
                         print("Birthday song not found at expected location. Will generate video without audio.")
 
         try:
-            # Import BytesIO here to ensure it's in scope
-            from io import BytesIO
+            # ===== NEW INITIAL VALIDATION BLOCK for photo_path =====
+            if self.verbose:
+                print(f"ChibiClip: Initial validation for photo_path: {photo_path}")
+            if not os.path.exists(photo_path):
+                raise FileNotFoundError(f"ChibiClip: Input photo file does not exist at path: {photo_path}")
+            if os.path.getsize(photo_path) == 0:
+                raise ValueError(f"ChibiClip: Input photo file is empty: {photo_path}")
+
+            file_type_confirmed_by_tool = False
+            detected_mime_type = "unknown"
+            file_header_bytes_hex = "unknown"
+
+            try:
+                with open(photo_path, "rb") as f_check_header:
+                    file_header_bytes_hex = f_check_header.read(32).hex()
+                if self.verbose:
+                    print(f"ChibiClip: Header bytes of {photo_path}: {file_header_bytes_hex}")
+            except Exception as e_read_header:
+                if self.verbose:
+                    print(f"ChibiClip: Could not read header bytes from {photo_path}: {e_read_header}")
+
+            if MAGIC_AVAILABLE:
+                try:
+                    mime_detector = magic.Magic(mime=True)
+                    detected_mime_type = mime_detector.from_file(photo_path)
+                    if self.verbose:
+                        print(f"ChibiClip: python-magic detected MIME type: {detected_mime_type} for {photo_path}")
+                    if detected_mime_type.startswith("image/"):
+                        file_type_confirmed_by_tool = True
+                except Exception as e_magic:
+                    if self.verbose:
+                        print(f"ChibiClip: python-magic check failed for {photo_path}: {e_magic}")
+            
+            if not file_type_confirmed_by_tool and SUBPROCESS_AVAILABLE:
+                try:
+                    subprocess.run(['which', 'file'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                    result = subprocess.run(['file', '--mime-type', '-b', photo_path], capture_output=True, text=True, check=True, timeout=5)
+                    detected_mime_type_file_cmd = result.stdout.strip()
+                    if self.verbose:
+                        print(f"ChibiClip: 'file' command detected MIME type: {detected_mime_type_file_cmd} for {photo_path}")
+                    if detected_mime_type_file_cmd.startswith("image/"):
+                        file_type_confirmed_by_tool = True
+                        if detected_mime_type == "unknown":
+                             detected_mime_type = detected_mime_type_file_cmd
+                    elif self.verbose:
+                        result_full = subprocess.run(['file', photo_path], capture_output=True, text=True, timeout=5)
+                        print(f"ChibiClip: 'file' command full output: {result_full.stdout.strip()} for {photo_path}")
+                except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired) as e_file_cmd:
+                    if self.verbose:
+                        print(f"ChibiClip: 'file' command check failed for {photo_path}: {e_file_cmd}")
+            
+            pil_can_open = False
+            pil_format_guess = "unknown"
+            if not file_type_confirmed_by_tool:
+                try:
+                    with Image.open(photo_path) as img_pil_check:
+                        pil_format_guess = img_pil_check.format
+                        if self.verbose:
+                            print(f"ChibiClip: PIL initial check successful for {photo_path}: format={pil_format_guess}")
+                        if pil_format_guess: 
+                            file_type_confirmed_by_tool = True 
+                            if detected_mime_type == "unknown":
+                                detected_mime_type = f"image/{pil_format_guess.lower()}"
+                        pil_can_open = True
+                except Exception as e_pil_check:
+                     if self.verbose:
+                        print(f"ChibiClip: PIL initial check failed for {photo_path}: {e_pil_check}")
+            
+            if not file_type_confirmed_by_tool:
+                error_msg = (
+                    f"ChibiClip: Initial validation failed: Cannot confirm '{photo_path}' is a valid image file. "
+                    f"Detected MIME (by tools): {detected_mime_type}. "
+                    f"PIL could open: {pil_can_open} (format guess: {pil_format_guess}). "
+                    f"File header: {file_header_bytes_hex}."
+                )
+                if self.verbose: print(error_msg)
+                raise ValueError(error_msg)
+            
+            if self.verbose:
+                print(f"ChibiClip: Initial validation passed for {photo_path}. Confirmed image type. Best guess MIME: {detected_mime_type}")
+            # ===== END OF NEW INITIAL VALIDATION BLOCK =====
+
+            from io import BytesIO # Ensure BytesIO is imported for this scope
             
             prompt = self.generate_ai_prompt(action)
             
             if self.verbose:
-                print(f"Reading photo from: {photo_path}")
+                print(f"ChibiClip: Reading photo from validated path: {photo_path}")
             
-            try:
+            try: # This is the block that previously started around line 1170
                 with open(photo_path, "rb") as f:
                     file_data = f.read()
                     
-                # Verify we have some actual data
-                if not file_data:
-                    raise ValueError(f"No data read from file {photo_path}")
+                if not file_data: 
+                    raise ValueError(f"ChibiClip: No data read from file {photo_path} despite earlier size check.")
                 
-                file_size = len(file_data)
-                if self.verbose:
-                    print(f"Read {file_size} bytes from file {photo_path}")
-                    # Print first few bytes to help with debugging
-                    print(f"File header: {file_data[:16].hex()}")
-                    
-                # Create a BytesIO object from the read data
                 image_content = BytesIO(file_data)
                 
-                # Verify the image file format - with enhanced error handling
+                # Verify the image file format - with enhanced error handling (existing complex block)
                 try:
                     # Verify BytesIO has data
                     if image_content.getbuffer().nbytes == 0:
-                        raise ValueError("BytesIO object contains no data")
+                        raise ValueError("ChibiClip: BytesIO object (from validated file) contains no data")
                     
-                    # Reset position to start
                     image_content.seek(0)
                     
-                    # Try to open with different image libraries for redundancy
                     try:
                         img = Image.open(image_content)
+                        # ... (rest of your existing PIL processing logic from the user-provided snippet, starting from here) ...
+                        # ... This includes the nested try-except for Image.open(image_content), temp_image_path saving, etc. ...
+                        # ... Ensure it ends before the 'except Exception as img_error:' that catches failures of this block ...
+                        # For brevity, I'm not repeating the entire deeply nested block here.
+                        # The critical point is that the 'image_content = BytesIO(file_data)' above
+                        # is now using 'file_data' from a 'photo_path' that has passed initial validation.
+                        
+                        # Assuming the complex PIL opening logic starts here, as an example:
                         img_format = img.format
                         img_mode = img.mode
                         img_size = img.size
                         if self.verbose:
-                            print(f"Successfully loaded image: format={img_format}, mode={img_mode}, size={img_size}")
-                        # Close the image to avoid resource issues
+                            print(f"ChibiClip: Successfully loaded image into BytesIO: format={img_format}, mode={img_mode}, size={img_size}")
                         img.close()
                     except Exception as pil_error:
-                        # Log detailed error
                         if self.verbose:
-                            print(f"PIL Error: {pil_error}")
-                            print("Attempting to save and reload the image file directly...")
+                            print(f"ChibiClip: PIL Error opening BytesIO from validated file: {pil_error}")
+                            print(f"ChibiClip: Attempting to save and reload the image file directly (again, from validated photo_path)...")
                         
-                        # Try writing to a direct file and loading again
-                        temp_image_path = os.path.join(self.output_dir, f"debug_image_{uuid.uuid4().hex}.png")
+                        temp_image_path = os.path.join(self.output_dir, f"debug_image_validated_{uuid.uuid4().hex}.png")
                         try:
-                            # Ensure output directory exists and is writable
                             if not os.path.exists(self.output_dir):
                                 os.makedirs(self.output_dir, exist_ok=True)
-                                if self.verbose:
-                                    print(f"Created output directory: {self.output_dir}")
-                            
-                            # Test directory permissions
-                            perm_test_file = os.path.join(self.output_dir, "permission_test.txt")
-                            try:
-                                with open(perm_test_file, "w") as f:
-                                    f.write("Permission test")
-                                os.remove(perm_test_file)
-                                if self.verbose:
-                                    print(f"Output directory {self.output_dir} is writable")
-                            except (IOError, PermissionError) as perm_error:
-                                if self.verbose:
-                                    print(f"Output directory permission error: {perm_error}")
-                                # Try temp directory as fallback
-                                temp_dir = tempfile.gettempdir()
-                                temp_image_path = os.path.join(temp_dir, f"debug_image_{uuid.uuid4().hex}.png")
-                                if self.verbose:
-                                    print(f"Using system temp directory instead: {temp_dir}")
-                            
-                            # Write image data to file, using with statement for proper closing
-                            image_content.seek(0)
-                            img_data = image_content.getvalue()
-                            
+                            # Re-read from the validated photo_path to ensure fresh data for this debug save
+                            with open(photo_path, "rb") as f_orig_for_debug:
+                                original_data_for_debug = f_orig_for_debug.read()
+
                             if self.verbose:
-                                print(f"Writing {len(img_data)} bytes to {temp_image_path}")
-                                
+                                print(f"ChibiClip: Writing {len(original_data_for_debug)} bytes from {photo_path} to debug file {temp_image_path}")
                             with open(temp_image_path, "wb") as tmp_file:
-                                tmp_file.write(img_data)
+                                tmp_file.write(original_data_for_debug)
                             
-                            # Verify file was created and has content
-                            if not os.path.exists(temp_image_path):
-                                raise IOError(f"Failed to create file: {temp_image_path}")
+                            if not os.path.exists(temp_image_path) or os.path.getsize(temp_image_path) == 0:
+                                raise IOError(f"ChibiClip: Failed to create or wrote empty debug file: {temp_image_path}")
                             
-                            if os.path.getsize(temp_image_path) == 0:
-                                raise IOError(f"File was created but is empty: {temp_image_path}")
-                                
-                            file_size = os.path.getsize(temp_image_path)
                             if self.verbose:
-                                print(f"Wrote {file_size} bytes to {temp_image_path}")
+                                print(f"ChibiClip: Wrote {os.path.getsize(temp_image_path)} bytes to {temp_image_path}")
                             
-                            # Try loading the direct file after verifying it exists with content
                             try:
                                 img = Image.open(temp_image_path)
-                                img_format = img.format
-                                img_mode = img.mode
-                                img_size = img.size
                                 if self.verbose:
-                                    print(f"Successfully loaded from temp file: format={img_format}, mode={img_mode}, size={img_size}")
-                                
-                                # Use the temp file instead going forward
-                                photo_path = temp_image_path
-                                
-                                # Close the image
+                                    print(f"ChibiClip: Successfully loaded debug image from temp file: format={img.format}, mode={img.mode}, size={img.size}")
+                                # photo_path = temp_image_path # Decide if we want to proceed with this path
                                 img.close()
+                                # If successful, image_content might need to be recreated from this temp_image_path if it's to be used
+                                # For now, let's assume if this works, the original file was the issue.
+                                # Recreate image_content from the successfully opened temp_image_path
+                                with open(temp_image_path, "rb") as f_temp_debug:
+                                    image_content = BytesIO(f_temp_debug.read())
+                                image_content.seek(0) # Reset for further processing
+
                             except Exception as img_load_error:
                                 if self.verbose:
-                                    print(f"Failed to open saved image: {img_load_error}")
-                                    
-                                    # Try to verify file type with file command
-                                    try:
-                                        import subprocess
-                                        result = subprocess.run(['file', temp_image_path], capture_output=True, text=True)
-                                        print(f"File command output for temp file: {result.stdout}")
-                                    except Exception as file_cmd_error:
-                                        print(f"Could not run 'file' command on temp file: {file_cmd_error}")
-                                
-                                # Try a different approach: convert directly with Pillow
+                                    print(f"ChibiClip: Failed to open saved debug image {temp_image_path}: {img_load_error}")
+                                # Try direct PIL conversion as a deeper fallback
                                 try:
-                                    if self.verbose:
-                                        print("Attempting direct conversion using PIL")
+                                    if self.verbose: print("ChibiClip: Attempting direct PIL conversion on original validated photo_path")
+                                    with open(photo_path, "rb") as f_orig_convert:
+                                        original_data_convert = f_orig_convert.read()
                                     
-                                    # Start with original photo
-                                    with open(photo_path, "rb") as f:
-                                        original_data = f.read()
+                                    from io import BytesIO # Ensure again for this specific scope if needed
+                                    input_buffer_convert = BytesIO(original_data_convert)
                                     
-                                    # Force conversion to clean PNG
-                                    from io import BytesIO  # Explicit import to ensure it's in this scope
-                                    input_buffer = BytesIO(original_data)
-                                    output_buffer = BytesIO()
+                                    from PIL import ImageFile # For LOAD_TRUNCATED_IMAGES
+                                    ImageFile.LOAD_TRUNCATED_IMAGES = True
                                     
-                                    # Try different ways of opening the image
-                                    try:
-                                        # This uses the module-level 'Image'
-                                        direct_img = Image.open(input_buffer)
-                                    except Exception as e:
-                                        if self.verbose:
-                                            print(f"Error opening with PIL: {e}, trying with a different approach")
-                                        # Try reading as raw bytes
-                                        from PIL import ImageFile # Only import ImageFile, rely on module-level 'Image'
-                                        ImageFile.LOAD_TRUNCATED_IMAGES = True
-                                        input_buffer.seek(0)
-                                        # This uses the module-level 'Image'
-                                        direct_img = Image.open(input_buffer)
+                                    direct_img_convert = Image.open(input_buffer_convert)
+                                    if direct_img_convert.mode != "RGBA": # Prefer RGBA for consistency
+                                        direct_img_convert = direct_img_convert.convert("RGBA")
                                     
-                                    # Convert to RGB for safety
-                                    if direct_img.mode != "RGB":
-                                        direct_img = direct_img.convert("RGB")
+                                    converted_png_path = os.path.join(self.output_dir, f"converted_final_{uuid.uuid4().hex}.png")
+                                    direct_img_convert.save(converted_png_path, "PNG")
+                                    direct_img_convert.close()
                                     
-                                    # Save to new PNG file
-                                    direct_img.save(temp_image_path, "PNG")
-                                    direct_img.close()
+                                    if self.verbose: print(f"ChibiClip: Successfully converted original to PNG: {converted_png_path}")
                                     
-                                    # Verify the new file
-                                    img = Image.open(temp_image_path)
-                                    if self.verbose:
-                                        print(f"Successfully converted and saved as PNG: format={img.format}, mode={img.mode}")
-                                    img.close()
-                                    
-                                    # Update photo path to use this file
-                                    photo_path = temp_image_path
-                                except Exception as pil_convert_error:
-                                    if self.verbose:
-                                        print(f"Direct PIL conversion also failed: {pil_convert_error}")
-                                    raise ValueError(f"Could not convert image to a usable format: {img_load_error}")
-                        except Exception as file_error:
-                            if self.verbose:
-                                print(f"Error saving debug image file: {file_error}")
-                            raise ValueError(f"Could not save debug image file: {file_error}")
-                     
-                    # Reset BytesIO position after checks
-                    image_content.seek(0)
+                                    with open(converted_png_path, "rb") as f_converted:
+                                        image_content = BytesIO(f_converted.read())
+                                    image_content.seek(0)
+                                    # photo_path = converted_png_path # Update photo_path if we use this
+                                except Exception as pil_convert_error_deep:
+                                    if self.verbose: print(f"ChibiClip: Direct PIL conversion also failed: {pil_convert_error_deep}")
+                                    raise ValueError(f"ChibiClip: Could not convert image from {photo_path} to a usable format after multiple attempts: {pil_error}") from pil_convert_error_deep
+                        except Exception as file_error_debug_save:
+                            if self.verbose: print(f"ChibiClip: Error saving debug image file: {file_error_debug_save}")
+                            raise ValueError(f"ChibiClip: Could not save debug image for {photo_path}: {pil_error}") from file_error_debug_save
                     
-                except Exception as img_error:
+                    image_content.seek(0) # Ensure pointer is at the start for _preprocess_image_for_openai
+                    
+                except Exception as img_error_main_processing: # Catch errors from the main PIL processing block
                     if self.verbose:
-                        print(f"Critical image verification error: {img_error}")
-                        print(f"Photo path: {photo_path}, exists: {os.path.exists(photo_path)}, size: {os.path.getsize(photo_path) if os.path.exists(photo_path) else 'N/A'}")
-                        
-                        # Try to get more info about the file
-                        try:
-                            import subprocess
-                            try:
-                                # Check if file command is available
-                                subprocess.run(['which', 'file'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                                
-                                # File command is available, use it
-                                result = subprocess.run(['file', photo_path], capture_output=True, text=True)
-                                print(f"File command output: {result.stdout}")
-                            except (subprocess.SubprocessError, FileNotFoundError):
-                                print("'file' command not available on system")
-                        except ImportError:
-                            print("subprocess module not available")
-                    
-                    # Try loading the image directly without BytesIO
-                    try:
-                        if self.verbose:
-                            print("Attempting to bypass BytesIO and load file directly...")
-                        direct_img = Image.open(photo_path)
-                        if self.verbose:
-                            print(f"Direct load successful: format={direct_img.format}, mode={direct_img.mode}")
-                        
-                        # Create a fresh BytesIO from the direct image
-                        new_buffer = BytesIO()
-                        direct_img.save(new_buffer, format="PNG")
-                        new_buffer.seek(0)
-                        direct_img.close()
-                        
-                        # Replace the original BytesIO
-                        image_content = new_buffer
-                        if self.verbose:
-                            print(f"Created new BytesIO with size: {image_content.getbuffer().nbytes} bytes")
-                    except Exception as direct_error:
-                        if self.verbose:
-                            print(f"Direct load also failed: {direct_error}")
-                        raise ValueError(f"Could not verify image format: {img_error}")
-            except Exception as e:
+                        print(f"ChibiClip: Critical image verification/processing error for {photo_path}: {img_error_main_processing}")
+                    # The initial validation block should have caught most structural file issues.
+                    # If we are here, it might be a more subtle PIL issue or an issue with the complex fallback logic itself.
+                    raise ValueError(f"ChibiClip: Could not process image content from {photo_path}: {img_error_main_processing}")
+
+            except Exception as e_read_validated_file: # Catch errors from reading the file or creating BytesIO
                 if self.verbose:
-                    print(f"Error in image loading: {e}")
-                    print(f"Photo path: {photo_path}")
+                    print(f"ChibiClip: Error in reading validated image file {photo_path} or creating BytesIO: {e_read_validated_file}")
                     import traceback
                     traceback.print_exc()
-                raise ValueError(f"Error reading image file: {e}")
+                raise ValueError(f"ChibiClip: Error reading validated image file {photo_path}: {e_read_validated_file}")
             
-            # Get appropriate image size based on selected ratio
-            image_size = IMAGE_SIZE_MAP.get(ratio, "1024x1024")
+            image_size = IMAGE_SIZE_MAP.get(ratio, "1024x1024") # Ensure this is after image_content is defined
             if self.verbose:
-                print(f"Using image size {image_size} for ratio {ratio}")
+                print(f"ChibiClip: Using image size {image_size} for ratio {ratio}")
 
             edited_b64 = self.edit_image_with_openai(image_content, prompt, image_size)
             

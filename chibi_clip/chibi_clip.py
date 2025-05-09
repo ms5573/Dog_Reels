@@ -890,294 +890,358 @@ class ChibiClipGenerator:
                 else:
                     raise ValueError(f"Invalid video_url: {video_url}. Not a valid URL or file path.")
             
-            # Load the video clip
+            # Load the video clip - MEMORY OPTIMIZATION: Using context manager and memory-saving parameters
             if self.verbose:
                 print(f"② Loading video with VideoFileClip from: {video_path}")
             try:
-                video_clip_obj = VideoFileClip(video_path)
-                if self.verbose:
-                    print(f"   Type of video_clip_obj: {type(video_clip_obj)}")
-                    if hasattr(video_clip_obj, 'subclip') and callable(getattr(video_clip_obj, 'subclip')):
-                        print(f"   DEBUG: video_clip_obj HAS a callable 'subclip' attribute.")
+                # Use ffmpeg_params to reduce memory usage
+                ffmpeg_opts = {
+                    'bufsize': '5000k',       # Limit buffer size
+                    'threads': '2'            # Limit threads for lower memory usage
+                }
+                
+                # Memory optimizations:
+                # 1. audio=False: Don't load the audio track from the video, we'll add our own
+                # 2. target_resolution: Downscale the video during loading to conserve memory
+                # 3. Using context manager to ensure resources are cleaned up
+                with VideoFileClip(video_path, audio=False, target_resolution=(480, None), ffmpeg_params=ffmpeg_opts) as original_clip:
+                    if self.verbose:
+                        print(f"   Original video dimensions: {original_clip.size}, duration: {original_clip.duration:.2f}s")
+                    
+                    # Get the original duration
+                    original_duration = original_clip.duration
+                    
+                    # Create a more memory-efficient version of the clip by adjusting fps if needed
+                    target_fps = min(25, original_clip.fps) if hasattr(original_clip, 'fps') and original_clip.fps > 25 else None
+                    
+                    if target_fps and target_fps < original_clip.fps:
+                        if self.verbose:
+                            print(f"   Optimizing frame rate from {original_clip.fps} to {target_fps} fps to reduce memory usage")
+                        # Make a copy with lower fps
+                        video_clip_obj = original_clip.set_fps(target_fps)
                     else:
-                        print(f"   ERROR: video_clip_obj does NOT have a callable 'subclip' attribute.")
-                        
-                if video_clip_obj.audio is not None:
-                    video_clip_obj = video_clip_obj.without_audio()
-            except Exception as e:
-                if self.verbose:
-                    print(f"   ERROR loading VideoFileClip: {e}")
-                raise RuntimeError(f"Error loading video file: {e}") from e
-
-            # Get the original duration
-            original_duration = video_clip_obj.duration
-            if self.verbose:
-                print(f"③ Original clip duration: {original_duration:.2f} seconds")
-
-            # If the video is shorter than target_duration, we'll loop it
-            if original_duration < total_duration:
-                if self.verbose:
-                    print(f"   Starting loop to create video of {total_duration}s duration.")
-
-                # Initialize tracking variables for the loop
-                clips_for_concatenation = []
-                accumulated_duration = 0
-                loop_count = 0
-
-                # Keep adding segments until we reach total_duration
-                while accumulated_duration < total_duration:
-                    loop_count += 1
-                    remaining_needed = total_duration - accumulated_duration
-                    
-                    # Determine the duration for this specific segment
-                    duration_this_segment = min(original_duration, remaining_needed)
-
-                    # If this segment will be a FULL loop of the original clip (i.e., not the potentially shorter final segment)
-                    # AND if it's not the very last piece needed (to avoid trimming the very end)
-                    # then trim a tiny fraction from the end to potentially smooth the loop transition.
-                    trim_end_offset = 0.05 # Trim 50ms (adjust if needed)
-                    subclip_end_time = duration_this_segment
-                    # Check if this segment covers most of the original duration AND if adding another full original duration wouldn't exceed the total needed.
-                    if duration_this_segment >= original_duration - trim_end_offset and (accumulated_duration + original_duration < total_duration + trim_end_offset): # Added tolerance to condition
-                         subclip_end_time = original_duration - trim_end_offset
-                         if self.verbose:
-                             print(f"   Trimming end of full loop segment. Using duration: {subclip_end_time:.2f}s")
-                    
-                    if self.verbose:
-                        print(f"   Loop {loop_count}: Creating segment. Target duration for segment: {subclip_end_time:.2f}s.")
-                        
-                    # Create a segment from the original video clip object
-                    segment = video_clip_obj.subclip(0, subclip_end_time) # Use adjusted end time
-                    clips_for_concatenation.append(segment)
-                    accumulated_duration += segment.duration 
-                    if self.verbose:
-                         print(f"   Loop {loop_count}: Segment created with duration {segment.duration:.2f}s. Accumulated: {accumulated_duration:.2f}s.")
-
-                # Concatenate all segments into the final video
-                if self.verbose:
-                    print(f"④ Concatenating {len(clips_for_concatenation)} video segments.")
-                final_animated_video_obj = concatenate_videoclips(clips_for_concatenation, method="compose")
+                        # Create a copy of the clip to ensure we don't close the original when we close video_clip_obj
+                        # We need to keep video_clip_obj separate since it will be modified further
+                        video_clip_obj = original_clip.copy()
                 
-            else:
-                # If the video is longer than target_duration, trim it
                 if self.verbose:
-                    print(f"④ Trimming video from {original_duration:.2f}s to {total_duration:.2f}s")
-                final_animated_video_obj = video_clip_obj.subclip(0, total_duration)
-                # Close the original clip to free up resources
-                video_clip_obj.close()
-                video_clip_obj = None
+                    print(f"③ Original clip duration: {original_duration:.2f} seconds")
 
-            # Now handle the audio
-            if audio_path:
-                # Load the audio file
-                if self.verbose:
-                    print(f"⑤ Loading audio from {audio_path}")
-                audio_obj = AudioFileClip(audio_path)
-                
-                # If the audio is shorter than target_duration, loop it
-                if audio_obj.duration < total_duration:
+                # If the video is shorter than target_duration, we'll loop it
+                if original_duration < total_duration:
                     if self.verbose:
-                        print(f"⑥ Audio ({audio_obj.duration:.2f}s) is shorter than target ({total_duration}s). Looping with FFmpeg.")
-                    temp_audio_path = os.path.join(temp_dir, "extended_audio.mp3")
-                    if self.verbose:
-                        print(f"   Calculated number of loops for audio: {num_loops}")
+                        print(f"   Starting loop to create video of {total_duration}s duration.")
 
-                    # Using -stream_loop. Number of loops for input stream. -1 means infinite. We need total_duration.
-                    # FFmpeg stream_loop counts from 0. So N-1 for N loops.
-                    # Simpler: use -t to set output duration and let ffmpeg handle loop internally if input is too short with -loop 1 for input file
-                    # Forcing audio loop through re-encoding to a temporary file of target duration
-                    cmd = [
-                        "ffmpeg",
-                        "-i", audio_path, # Original audio path
-                        "-af", f"aloop=loop=-1:size={int(2**24)}:start=0,atrim=0:{total_duration}", # Loop and trim audio with filters
-                        "-c:a", "aac", # Re-encode to AAC for compatibility
-                        "-b:a", "192k",
-                        "-y", temp_audio_path
-                    ]
-                    if self.verbose:
-                        print(f"   Running FFmpeg for audio loop: {' '.join(cmd)}")
+                    # Initialize tracking variables for the loop
+                    clips_for_concatenation = []
+                    accumulated_duration = 0
+                    loop_count = 0
+                    
+                    # Process in chunks to reduce memory usage
                     try:
-                        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        audio_obj.close()
-                        audio_obj = AudioFileClip(temp_audio_path)
-                        if self.verbose:
-                            print(f"   Looped audio created. New duration: {audio_obj.duration:.2f}s")
-                    except subprocess.CalledProcessError as e:
-                        if self.verbose:
-                            print(f"   ERROR: FFmpeg audio looping failed. Stdout: {e.stdout.decode() if e.stdout else 'N/A'}, Stderr: {e.stderr.decode() if e.stderr else 'N/A'}")
-                            print(f"   Falling back to MoviePy audio subclip/loop if possible (might be inaccurate).")
-                        # Fallback to simple trim/extend if FFmpeg fails (less accurate looping)
-                        if audio_obj.duration > total_duration: audio_obj = audio_obj.subclip(0, total_duration)
-                        # MoviePy loop for audio is not reliable for precise duration, so FFmpeg is preferred.
+                        # Keep adding segments until we reach total_duration
+                        while accumulated_duration < total_duration:
+                            loop_count += 1
+                            remaining_needed = total_duration - accumulated_duration
+                            
+                            # Determine the duration for this specific segment
+                            duration_this_segment = min(original_duration, remaining_needed)
 
-                elif audio_obj.duration > total_duration:
-                    if self.verbose:
-                        print(f"⑦ Trimming audio from {audio_obj.duration:.2f}s to {total_duration:.2f}s")
-                    audio_obj = audio_obj.subclip(0, total_duration)
-                
-                if self.verbose:
-                    print(f"⑧ Setting audio (duration: {audio_obj.duration:.2f}s) to video (duration: {final_animated_video_obj.duration:.2f}s)")
-                final_animated_video_obj = final_animated_video_obj.set_audio(audio_obj)
-            
-            # --- BIRTHDAY CARD SLATE LOGIC START ---
-            final_video_to_write = final_animated_video_obj # Default to the animated video
-            card_slate = None 
-            backdrop_clip = None
-            txt_clip = None
-
-            if birthday_message and birthday_message.strip():
-                if self.verbose:
-                    print(f"INFO: Creating birthday card slate with message: '{birthday_message}'")
-                try:
-                    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-                    
-                    # Get the dimensions of the animated video to ensure consistent resolution
-                    video_width, video_height = final_animated_video_obj.size
-                    if self.verbose: 
-                        print(f"INFO: Animated video dimensions: {video_width}x{video_height}")
-                    
-                    # Choose the appropriate backdrop based on dimensions
-                    if video_width == 720 and video_height == 1280:
-                        # Use the pre-sized backdrop for 720x1280 videos
-                        backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
-                        if self.verbose:
-                            print(f"INFO: Using pre-sized backdrop (720x1280) for perfect fit")
-                    else:
-                        # Use the original backdrop for other dimensions
-                        backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
-                        if self.verbose:
-                            print(f"INFO: Using original backdrop that will need resizing")
-                    
-                    if not os.path.exists(backdrop_path):
-                        if self.verbose:
-                            print(f"WARNING: Selected backdrop image not found at {backdrop_path}. Trying alternative version.")
-                            if video_width == 720 and video_height == 1280:
-                                backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
-                            else:
-                                backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
+                            # If this segment will be a FULL loop of the original clip (i.e., not the potentially shorter final segment)
+                            # AND if it's not the very last piece needed (to avoid trimming the very end)
+                            # then trim a tiny fraction from the end to potentially smooth the loop transition.
+                            trim_end_offset = 0.05 # Trim 50ms (adjust if needed)
+                            subclip_end_time = duration_this_segment
+                            
+                            # Check if this segment covers most of the original duration AND if adding another full original duration wouldn't exceed the total needed.
+                            if duration_this_segment >= original_duration - trim_end_offset and (accumulated_duration + original_duration < total_duration + trim_end_offset): # Added tolerance to condition
+                                 subclip_end_time = original_duration - trim_end_offset
+                                 if self.verbose:
+                                     print(f"   Trimming end of full loop segment. Using duration: {subclip_end_time:.2f}s")
+                            
+                            if self.verbose:
+                                print(f"   Loop {loop_count}: Creating segment. Target duration for segment: {subclip_end_time:.2f}s.")
                                 
-                            if not os.path.exists(backdrop_path):
-                                print(f"WARNING: Alternative backdrop image also not found. Skipping card slate.")
-                                raise FileNotFoundError(f"No backdrop images found in {assets_dir}")
-                    
-                    card_slate_duration = 5 # seconds
-                    if self.verbose: print(f"INFO: Loading backdrop image from {backdrop_path}")
-                    backdrop_clip = ImageClip(backdrop_path).set_duration(card_slate_duration)
-                    
-                    if self.verbose: print(f"INFO: Creating TextClip for message.")
-                    txt_clip = TextClip(birthday_message, 
-                                        fontsize=70, 
-                                        color='white', 
-                                        font='Arial-Bold', 
-                                        stroke_color='black', 
-                                        stroke_width=2,
-                                        method='caption',
-                                        size=(backdrop_clip.w * 0.8, None) 
-                                        )
-                    txt_clip = txt_clip.set_position('center').set_duration(card_slate_duration)
-                    
-                    if self.verbose: print(f"INFO: Compositing backdrop and text.")
-                    card_slate = CompositeVideoClip([backdrop_clip, txt_clip], size=backdrop_clip.size).set_duration(card_slate_duration)
-                    
-                    # Get the dimensions of the animated video to ensure consistent resolution
-                    video_width, video_height = final_animated_video_obj.size
-                    if self.verbose: 
-                        print(f"INFO: Animated video dimensions: {video_width}x{video_height}")
-                        print(f"INFO: Card slate dimensions: {card_slate.size[0]}x{card_slate.size[1]}")
+                            # Create a segment from the video clip object
+                            segment = video_clip_obj.subclip(0, subclip_end_time)
+                            clips_for_concatenation.append(segment)
+                            accumulated_duration += segment.duration 
+                            if self.verbose:
+                                 print(f"   Loop {loop_count}: Segment created with duration {segment.duration:.2f}s. Accumulated: {accumulated_duration:.2f}s.")
+                                 
+                            # Reduce memory pressure by processing in smaller batches if we have too many segments
+                            if len(clips_for_concatenation) >= 4 and accumulated_duration < total_duration:
+                                if self.verbose:
+                                    print(f"   Memory optimization: Concatenating intermediate batch of {len(clips_for_concatenation)} segments.")
+                                # Concatenate current segments and replace the list with just this one concatenated clip
+                                intermediate_concat = concatenate_videoclips(clips_for_concatenation, method="compose")
+                                
+                                # Clear the list and replace with the concatenated result
+                                for clip in clips_for_concatenation:
+                                    if hasattr(clip, 'close') and clip != video_clip_obj:
+                                        clip.close()
+                                
+                                clips_for_concatenation = [intermediate_concat]
+
+                        # Concatenate all segments into the final video
+                        if self.verbose:
+                            print(f"④ Concatenating {len(clips_for_concatenation)} video segments.")
+                        final_animated_video_obj = concatenate_videoclips(clips_for_concatenation, method="compose")
                         
-                    # Resize the card slate to match the animated video dimensions
-                    if card_slate.size != (video_width, video_height):
-                        if self.verbose: print(f"INFO: Resizing card slate to match video dimensions: {video_width}x{video_height}")
+                        # Close segment clips to free memory
+                        for clip in clips_for_concatenation:
+                            if hasattr(clip, 'close') and clip != final_animated_video_obj:
+                                clip.close()
+                        clips_for_concatenation = []
+                    
+                    except MemoryError as mem_err:
+                        if self.verbose:
+                            print(f"Memory error during video processing: {mem_err}. Trying a more conservative approach.")
+                        
+                        # Cleanup existing objects
+                        for clip in clips_for_concatenation:
+                            if hasattr(clip, 'close'):
+                                try: clip.close()
+                                except: pass
+                        
+                        if video_clip_obj and hasattr(video_clip_obj, 'close'):
+                            try: video_clip_obj.close()
+                            except: pass
+                        
+                        # Retry with FFmpeg shell command for looping - much more memory efficient
+                        ffmpeg_input = os.path.join(temp_dir, "temp_video.mp4")
+                        ffmpeg_output = os.path.join(temp_dir, "looped_video.mp4")
+                        
+                        # Calculate loop count needed (rounded up)
+                        import math
+                        loop_count = math.ceil(total_duration / original_duration)
+                        if self.verbose:
+                            print(f"   Falling back to FFmpeg for looping: will repeat video {loop_count} times.")
+                        
+                        # Use FFmpeg's -stream_loop parameter to repeat the input file
+                        # -stream_loop N repeats the input N+1 times, so we subtract 1
+                        loop_cmd = [
+                            "ffmpeg", "-y",
+                            "-stream_loop", str(loop_count - 1),
+                            "-i", ffmpeg_input,
+                            "-c", "copy",  # Just copy, don't re-encode
+                            "-t", str(total_duration),  # Limit to desired duration
+                            ffmpeg_output
+                        ]
+                        
+                        if self.verbose:
+                            print(f"   Running FFmpeg command: {' '.join(loop_cmd)}")
                         
                         try:
-                            # Use the improved resize function to handle newer PIL versions
-                            card_slate = resize(card_slate, width=video_width, height=video_height)
-                        except Exception as resize_error:
+                            subprocess.run(loop_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            # Now load the looped video
+                            # Use conservative memory settings
+                            final_animated_video_obj = VideoFileClip(
+                                ffmpeg_output, 
+                                audio=False,
+                                target_resolution=(480, None),
+                                fps_source="fps"
+                            )
+                            if final_animated_video_obj.duration > total_duration:
+                                final_animated_video_obj = final_animated_video_obj.subclip(0, total_duration)
+                        except subprocess.CalledProcessError as e_ffmpeg:
                             if self.verbose:
-                                print(f"WARNING: Error with standard resize: {resize_error}")
-                                print("Falling back to custom resize implementation")
-                            
-                            # Custom resize implementation for compatibility
-                            def custom_resize(clip, target_width, target_height):
-                                # Get a resampling filter that exists in this PIL version
-                                resample_filter = None
-                                if hasattr(Image, 'LANCZOS'):
-                                    resample_filter = Image.LANCZOS
-                                elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'LANCZOS'):
-                                    resample_filter = Image.Resampling.LANCZOS
-                                elif hasattr(Image, 'ANTIALIAS'):
-                                    resample_filter = Image.ANTIALIAS
-                                else:
-                                    # Fallback to BICUBIC
-                                    if hasattr(Image, 'BICUBIC'):
-                                        resample_filter = Image.BICUBIC
-                                    elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'BICUBIC'):
-                                        resample_filter = Image.Resampling.BICUBIC
-                                    else:
-                                        # Last resort
-                                        resample_filter = 1  # BILINEAR
-
-                                # Function to resize a single frame
-                                def resizer(pic):
-                                    pic = pic.astype('uint8')
-                                    newpic = Image.fromarray(pic)
-                                    newpic = newpic.resize((target_width, target_height), resample_filter)
-                                    return np.array(newpic)
-                                
-                                # Apply resize to all frames
-                                resized_clip = clip.fl_image(resizer)
-                                
-                                # Preserve attributes
-                                if hasattr(clip, 'fps'):
-                                    resized_clip.fps = clip.fps
-                                if hasattr(clip, 'audio'):
-                                    resized_clip.audio = clip.audio
-                                    
-                                return resized_clip
-                            
-                            # Use the custom implementation
-                            card_slate = custom_resize(card_slate, video_width, video_height)
+                                print(f"   FFmpeg fallback failed: {e_ffmpeg}")
+                            raise RuntimeError(f"Failed to loop video with FFmpeg: {e_ffmpeg}")
                         
-                        if self.verbose:
-                            print(f"INFO: Card slate resized successfully to {card_slate.size}")
+                else:
+                    # If the video is longer than target_duration, trim it
+                    if self.verbose:
+                        print(f"④ Trimming video from {original_duration:.2f}s to {total_duration:.2f}s")
+                    final_animated_video_obj = video_clip_obj.subclip(0, total_duration)
+                    # Close the original clip to free up resources
+                    if video_clip_obj and video_clip_obj != final_animated_video_obj:
+                        video_clip_obj.close()
+                    video_clip_obj = None
 
-                    if self.verbose: print(f"INFO: Concatenating card slate with animated video.")
-                    # Use method="compose" for smoother transitions between clips
-                    final_video_to_write = concatenate_videoclips([card_slate, final_animated_video_obj], method="compose")
+                # Now handle the audio
+                if audio_path:
+                    # Load the audio file
                     if self.verbose:
-                        print(f"INFO: Birthday card slate created and prepended. New total duration approx: {final_video_to_write.duration:.2f}s")
-                except Exception as slate_e:
+                        print(f"⑤ Loading audio from {audio_path}")
+                    audio_obj = AudioFileClip(audio_path)
+                    
+                    # If the audio is shorter than target_duration, loop it
+                    if audio_obj.duration < total_duration:
+                        if self.verbose:
+                            print(f"⑥ Audio ({audio_obj.duration:.2f}s) is shorter than target ({total_duration}s). Looping with FFmpeg.")
+                        temp_audio_path = os.path.join(temp_dir, "extended_audio.mp3")
+                        
+                        # Using -stream_loop. Number of loops for input stream. -1 means infinite. We need total_duration.
+                        # FFmpeg stream_loop counts from 0. So N-1 for N loops.
+                        # Simpler: use -t to set output duration and let ffmpeg handle loop internally if input is too short with -loop 1 for input file
+                        # Forcing audio loop through re-encoding to a temporary file of target duration
+                        cmd = [
+                            "ffmpeg",
+                            "-i", audio_path, # Original audio path
+                            "-af", f"aloop=loop=-1:size={int(2**24)}:start=0,atrim=0:{total_duration}", # Loop and trim audio with filters
+                            "-c:a", "aac", # Re-encode to AAC for compatibility
+                            "-b:a", "192k",
+                            "-y", temp_audio_path
+                        ]
+                        if self.verbose:
+                            print(f"   Running FFmpeg for audio loop: {' '.join(cmd)}")
+                        try:
+                            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            audio_obj.close()
+                            audio_obj = AudioFileClip(temp_audio_path)
+                            if self.verbose:
+                                print(f"   Looped audio created. New duration: {audio_obj.duration:.2f}s")
+                        except subprocess.CalledProcessError as e:
+                            if self.verbose:
+                                print(f"   ERROR: FFmpeg audio looping failed. Stdout: {e.stdout.decode() if e.stdout else 'N/A'}, Stderr: {e.stderr.decode() if e.stderr else 'N/A'}")
+                                print(f"   Falling back to MoviePy audio subclip/loop if possible (might be inaccurate).")
+                            # Fallback to simple trim/extend if FFmpeg fails (less accurate looping)
+                            if audio_obj.duration > total_duration: audio_obj = audio_obj.subclip(0, total_duration)
+                            # MoviePy loop for audio is not reliable for precise duration, so FFmpeg is preferred.
+
+                    elif audio_obj.duration > total_duration:
+                        if self.verbose:
+                            print(f"⑦ Trimming audio from {audio_obj.duration:.2f}s to {total_duration:.2f}s")
+                        audio_obj = audio_obj.subclip(0, total_duration)
+                    
                     if self.verbose:
-                        print(f"ERROR: Error creating birthday card slate: {slate_e}. Proceeding without it.")
-                    import traceback
-                    traceback.print_exc()
-            # --- BIRTHDAY CARD SLATE LOGIC END ---
-            
-            if output_path is None:
-                base_filename = "chibi_clip_with_music"
-                output_path = f"{base_filename}_{int(time.time())}.mp4"
-            
-            if self.verbose:
-                print(f"⑨ Writing final video to {output_path}")
-            
-            final_video_to_write.write_videofile(
-                output_path, 
-                codec="libx264", 
-                audio_codec="aac", 
-                fps=24, 
-                bitrate="8000k",
-                preset="medium",  # Balance between quality and encoding speed
-                threads=2,        # Use 2 threads for encoding
-                ffmpeg_params=["-pix_fmt", "yuv420p"],  # More compatible pixel format
-                logger=None
-            )
-            
-            if os.path.exists(output_path):
+                        print(f"⑧ Setting audio (duration: {audio_obj.duration:.2f}s) to video (duration: {final_animated_video_obj.duration:.2f}s)")
+                    final_animated_video_obj = final_animated_video_obj.set_audio(audio_obj)
+                
+                # --- BIRTHDAY CARD SLATE LOGIC START ---
+                final_video_to_write = final_animated_video_obj # Default to the animated video
+                card_slate = None 
+                backdrop_clip = None
+                txt_clip = None
+
+                if birthday_message and birthday_message.strip():
+                    if self.verbose:
+                        print(f"INFO: Creating birthday card slate with message: '{birthday_message}'")
+                    try:
+                        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+                        
+                        # Get the dimensions of the animated video to ensure consistent resolution
+                        video_width, video_height = final_animated_video_obj.size
+                        if self.verbose: 
+                            print(f"INFO: Animated video dimensions: {video_width}x{video_height}")
+                        
+                        # Choose the appropriate backdrop based on dimensions
+                        if video_width == 720 and video_height == 1280:
+                            # Use the pre-sized backdrop for 720x1280 videos
+                            backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
+                            if self.verbose:
+                                print(f"INFO: Using pre-sized backdrop (720x1280) for perfect fit")
+                        else:
+                            # Use the original backdrop for other dimensions
+                            backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
+                            if self.verbose:
+                                print(f"INFO: Using original backdrop that will need resizing")
+                        
+                        if not os.path.exists(backdrop_path):
+                            if self.verbose:
+                                print(f"WARNING: Selected backdrop image not found at {backdrop_path}. Trying alternative version.")
+                                if video_width == 720 and video_height == 1280:
+                                    backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
+                                else:
+                                    backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
+                                    
+                                if not os.path.exists(backdrop_path):
+                                    print(f"WARNING: Alternative backdrop image also not found. Skipping card slate.")
+                                    raise FileNotFoundError(f"No backdrop images found in {assets_dir}")
+                        
+                        card_slate_duration = 5 # seconds
+                        
+                        # Memory optimization: Load backdrop with target resolution matching video dimensions
+                        if self.verbose: print(f"INFO: Loading backdrop image from {backdrop_path}")
+                        backdrop_img = Image.open(backdrop_path)
+                        # Resize image before creating ImageClip to reduce memory
+                        if backdrop_img.size != (video_width, video_height):
+                            if self.verbose: print(f"INFO: Pre-resizing backdrop image to {video_width}x{video_height}")
+                            backdrop_img = backdrop_img.resize((video_width, video_height), Image.LANCZOS)
+                            resized_backdrop_path = os.path.join(temp_dir, "resized_backdrop.png")
+                            backdrop_img.save(resized_backdrop_path)
+                            backdrop_img.close()
+                            backdrop_clip = ImageClip(resized_backdrop_path).set_duration(card_slate_duration)
+                        else:
+                            backdrop_img.close()
+                            backdrop_clip = ImageClip(backdrop_path).set_duration(card_slate_duration)
+                        
+                        if self.verbose: print(f"INFO: Creating TextClip for message.")
+                        txt_clip = TextClip(birthday_message, 
+                                            fontsize=70, 
+                                            color='white', 
+                                            font='Arial-Bold', 
+                                            stroke_color='black', 
+                                            stroke_width=2,
+                                            method='caption',
+                                            size=(backdrop_clip.w * 0.8, None) 
+                                            )
+                        txt_clip = txt_clip.set_position('center').set_duration(card_slate_duration)
+                        
+                        if self.verbose: print(f"INFO: Compositing backdrop and text.")
+                        card_slate = CompositeVideoClip([backdrop_clip, txt_clip], size=backdrop_clip.size).set_duration(card_slate_duration)
+                        
+                        # The resizing is now handled before creating the ImageClip, so we don't need to resize the card_slate
+                        
+                        if self.verbose: print(f"INFO: Concatenating card slate with animated video.")
+                        # Use method="compose" for smoother transitions between clips
+                        final_video_to_write = concatenate_videoclips([card_slate, final_animated_video_obj], method="compose")
+                        if self.verbose:
+                            print(f"INFO: Birthday card slate created and prepended. New total duration approx: {final_video_to_write.duration:.2f}s")
+                    except Exception as slate_e:
+                        if self.verbose:
+                            print(f"ERROR: Error creating birthday card slate: {slate_e}. Proceeding without it.")
+                        import traceback
+                        traceback.print_exc()
+                # --- BIRTHDAY CARD SLATE LOGIC END ---
+                
+                if output_path is None:
+                    base_filename = "chibi_clip_with_music"
+                    output_path = f"{base_filename}_{int(time.time())}.mp4"
+                
                 if self.verbose:
-                    print(f"✅ Video with music saved to {output_path}")
-                return output_path
-            else:
-                raise RuntimeError(f"Failed to create video file at {output_path}")
+                    print(f"⑨ Writing final video to {output_path}")
+                
+                # Memory optimization: Use smaller bufsize and threads
+                final_video_to_write.write_videofile(
+                    output_path, 
+                    codec="libx264", 
+                    audio_codec="aac", 
+                    fps=24,
+                    bitrate="5000k",  # Lower bitrate to reduce file size and memory
+                    preset="faster",   # Use faster preset which uses less memory
+                    threads=2,        # Limit threads to reduce memory usage
+                    ffmpeg_params=[
+                        "-pix_fmt", "yuv420p",  # More compatible pixel format
+                        "-bufsize", "5000k",    # Smaller buffer size
+                        "-maxrate", "8000k"     # Limit maximum bitrate
+                    ],
+                    logger=None,
+                    verbose=False    # Disable internal verbosity to reduce output
+                )
+                
+                if os.path.exists(output_path):
+                    if self.verbose:
+                        print(f"✅ Video with music saved to {output_path}")
+                    return output_path
+                else:
+                    raise RuntimeError(f"Failed to create video file at {output_path}")
+            
+            except MemoryError as mem_e:
+                # Handle extreme memory pressure with ffmpeg direct manipulation if possible
+                if self.verbose:
+                    print(f"Critical memory error during video processing: {mem_e}")
+                    print("Attempting emergency fallback to pure FFmpeg for basic concatenation...")
+                
+                # Here we would implement a very low-level FFmpeg-only approach
+                # But for now, we'll just propagate the error
+                raise
+            
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error loading VideoFileClip: {e}")
+                raise RuntimeError(f"Error processing video file: {e}") from e
         except Exception as e:
             error_message = f"Error adding music to video: {e}"
             if self.verbose:
@@ -1189,21 +1253,21 @@ class ChibiClipGenerator:
             if self.verbose: print("⑩ Cleaning up resources in finally block...")
             # Safely close each resource in a try/except block to avoid errors
             try:
-                if video_clip_obj: 
+                if video_clip_obj and hasattr(video_clip_obj, 'close'): 
                     video_clip_obj.close()
                     if self.verbose: print("   Closed video_clip_obj")
             except Exception as e:
                 if self.verbose: print(f"   Warning: Error closing video_clip_obj: {e}")
                 
             try:
-                if audio_obj: 
+                if audio_obj and hasattr(audio_obj, 'close'): 
                     audio_obj.close()
                     if self.verbose: print("   Closed audio_obj")
             except Exception as e:
                 if self.verbose: print(f"   Warning: Error closing audio_obj: {e}")
                 
             try:
-                if final_animated_video_obj: 
+                if final_animated_video_obj and hasattr(final_animated_video_obj, 'close'): 
                     final_animated_video_obj.close()
                     if self.verbose: print("   Closed final_animated_video_obj")
             except Exception as e:
@@ -1211,42 +1275,32 @@ class ChibiClipGenerator:
                 
             try:
                 # Ensure final_video_to_write is closed if it's a different object (i.e., if slate was added)
-                if final_video_to_write and final_video_to_write is not final_animated_video_obj: 
+                if final_video_to_write and final_video_to_write is not final_animated_video_obj and hasattr(final_video_to_write, 'close'): 
                     final_video_to_write.close()
                     if self.verbose: print("   Closed final_video_to_write")
             except Exception as e:
                 if self.verbose: print(f"   Warning: Error closing final_video_to_write: {e}")
                 
             try:
-                if card_slate: 
+                if card_slate and hasattr(card_slate, 'close'): 
                     card_slate.close()
                     if self.verbose: print("   Closed card_slate")
             except Exception as e:
                 if self.verbose: print(f"   Warning: Error closing card_slate: {e}")
                 
             try:
-                if backdrop_clip: 
+                if backdrop_clip and hasattr(backdrop_clip, 'close'): 
                     backdrop_clip.close()
                     if self.verbose: print("   Closed backdrop_clip")
             except Exception as e:
                 if self.verbose: print(f"   Warning: Error closing backdrop_clip: {e}")
                 
             try:
-                if txt_clip: 
+                if txt_clip and hasattr(txt_clip, 'close'): 
                     txt_clip.close()
                     if self.verbose: print("   Closed txt_clip")
             except Exception as e:
                 if self.verbose: print(f"   Warning: Error closing txt_clip: {e}")
-                
-            # Also close clips in clips_for_concatenation if they are not closed by concatenate_videoclips
-            if 'clips_for_concatenation' in locals():
-                for i, clip in enumerate(clips_for_concatenation):
-                    try:
-                        if hasattr(clip, 'close') and callable(getattr(clip, 'close')):
-                            clip.close()
-                            if self.verbose: print(f"   Closed concatenation clip {i}")
-                    except Exception as e:
-                        if self.verbose: print(f"   Warning: Error closing concatenation clip {i}: {e}")
             
             # Clean up temp directory if it exists
             try:

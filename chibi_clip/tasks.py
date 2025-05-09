@@ -14,6 +14,8 @@ import traceback
 import requests
 from urllib.parse import urlparse
 import shutil
+from PIL import Image
+import io
 
 # Load environment variables for Celery
 from dotenv import load_dotenv
@@ -90,9 +92,29 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                     # Download the file
                     response = requests.get(photo_url, stream=True)
                     response.raise_for_status()
+                    
+                    # First save the raw downloaded file
                     with open(photo_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
+                    
+                    # Ensure it's a valid PNG for OpenAI by converting with Pillow
+                    try:
+                        # Create a standardized PNG version
+                        png_path = os.path.join(temp_dir, "photo_standardized.png")
+                        with Image.open(photo_path) as img:
+                            # Convert to RGB or RGBA mode
+                            if img.mode != 'RGBA':
+                                img = img.convert('RGBA')
+                            img.save(png_path, format="PNG")
+                        
+                        # Replace original path with standardized version
+                        photo_path = png_path
+                        print(f"Converted image to standardized PNG format: {photo_path}")
+                    except Exception as e:
+                        print(f"Error converting image to PNG: {e}")
+                        # Continue with original file if conversion fails
+                    
                     print(f"Downloaded photo from S3: {photo_url} to {photo_path}")
                 except Exception as e:
                     print(f"Error downloading photo from S3: {e}")

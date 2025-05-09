@@ -130,42 +130,124 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                     
                     # First save the raw downloaded file
                     raw_bytes = b''
-                    with open(photo_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                            # Save first chunk for debugging
-                            if not raw_bytes:
-                                raw_bytes = chunk[:32]  # First 32 bytes for magic number checking
+                    download_success = False
+                    file_size = 0
                     
-                    print(f"Downloaded file header bytes: {raw_bytes.hex()}")
-                    
-                    # Verify the file exists and has content
-                    if os.path.exists(photo_path) and os.path.getsize(photo_path) > 0:
-                        file_size = os.path.getsize(photo_path)
-                        print(f"Downloaded file size: {file_size} bytes")
-                        
-                        # Additional file type verification
+                    # Try multiple download methods if needed
+                    for download_attempt in range(3):  # Try up to 3 different methods
                         try:
-                            if MAGIC_AVAILABLE:
-                                mime = magic.Magic(mime=True)
-                                detected_type = mime.from_file(photo_path)
-                                print(f"Detected MIME type: {detected_type}")
-                                
-                                # If not detected as an image, try using file command
-                                if not detected_type.startswith('image/'):
-                                    if SUBPROCESS_AVAILABLE:
-                                        result = subprocess.run(['file', photo_path], capture_output=True, text=True)
-                                        print(f"File command output: {result.stdout}")
-                            elif SUBPROCESS_AVAILABLE:
-                                # Fallback to just using the file command if magic is not available
-                                result = subprocess.run(['file', photo_path], capture_output=True, text=True)
-                                print(f"File command output (fallback): {result.stdout}")
+                            if download_attempt == 0:
+                                # Method 1: Stream with requests
+                                print(f"Download attempt {download_attempt+1}: Using requests.iter_content")
+                                with open(photo_path, 'wb') as f:
+                                    for chunk in response.iter_content(chunk_size=8192):
+                                        f.write(chunk)
+                                        # Save first chunk for debugging
+                                        if not raw_bytes:
+                                            raw_bytes = chunk[:32]  # First 32 bytes for magic number checking
+                            elif download_attempt == 1:
+                                # Method 2: Direct requests content
+                                print(f"Download attempt {download_attempt+1}: Using requests.content directly")
+                                response = requests.get(photo_url)
+                                with open(photo_path, 'wb') as f:
+                                    f.write(response.content)
+                                if not raw_bytes and response.content:
+                                    raw_bytes = response.content[:32]
                             else:
-                                print("Neither magic nor file command available for type detection")
-                        except Exception as e:
-                            print(f"Error detecting file type: {e}")
-                    else:
-                        raise ValueError(f"Downloaded file is empty or doesn't exist: {photo_path}")
+                                # Method 3: urllib
+                                print(f"Download attempt {download_attempt+1}: Using urllib")
+                                import urllib.request
+                                urllib.request.urlretrieve(photo_url, photo_path)
+                                with open(photo_path, 'rb') as f:
+                                    first_bytes = f.read(32)
+                                    if first_bytes and not raw_bytes:
+                                        raw_bytes = first_bytes
+                            
+                            # Check if file exists and has size
+                            if os.path.exists(photo_path) and os.path.getsize(photo_path) > 0:
+                                file_size = os.path.getsize(photo_path)
+                                print(f"Downloaded file size: {file_size} bytes")
+                                download_success = True
+                                break  # Success, exit the loop
+                            else:
+                                print(f"Download attempt {download_attempt+1} resulted in empty file")
+                        except Exception as download_error:
+                            print(f"Download attempt {download_attempt+1} failed: {download_error}")
+                    
+                    if not download_success:
+                        raise ValueError(f"All download attempts failed for {photo_url}")
+                    
+                    if raw_bytes:
+                        print(f"Downloaded file header bytes: {raw_bytes.hex()}")
+                    
+                    # Verify file type and convert if needed
+                    file_type_verified = False
+                    
+                    # Try various methods to verify and convert if needed
+                    try:
+                        # Method 1: Try PIL directly
+                        try:
+                            from PIL import Image, ImageFile
+                            # Allow loading truncated images
+                            ImageFile.LOAD_TRUNCATED_IMAGES = True
+                            
+                            with Image.open(photo_path) as img:
+                                img_format = img.format
+                                img_mode = img.mode
+                                img_size = img.size
+                                print(f"Successfully verified image with PIL: format={img_format}, mode={img_mode}, size={img_size}")
+                                
+                                # If format is unexpected, convert to PNG
+                                if img_format not in ('JPEG', 'PNG'):
+                                    print(f"Converting {img_format} to PNG for better compatibility")
+                                    png_path = os.path.join(temp_dir, "photo_verified.png")
+                                    img = img.convert('RGBA' if img_mode != 'RGBA' else img_mode)
+                                    img.save(png_path, format="PNG")
+                                    if os.path.exists(png_path) and os.path.getsize(png_path) > 0:
+                                        photo_path = png_path
+                                        print(f"Converted to PNG: {photo_path}")
+                                
+                                file_type_verified = True
+                        except Exception as pil_error:
+                            print(f"PIL verification failed: {pil_error}")
+                            
+                            # Method 2: Try magic if available
+                            if MAGIC_AVAILABLE:
+                                try:
+                                    mime = magic.Magic(mime=True)
+                                    detected_type = mime.from_file(photo_path)
+                                    print(f"Detected MIME type: {detected_type}")
+                                    
+                                    if detected_type.startswith('image/'):
+                                        file_type_verified = True
+                                    else:
+                                        print(f"File doesn't appear to be an image. Detected as: {detected_type}")
+                                except Exception as magic_error:
+                                    print(f"Magic verification failed: {magic_error}")
+                            
+                            # Method 3: Try file command if available
+                            if SUBPROCESS_AVAILABLE and not file_type_verified:
+                                try:
+                                    result = subprocess.run(['file', photo_path], capture_output=True, text=True)
+                                    output = result.stdout
+                                    print(f"File command output: {output}")
+                                    
+                                    # Check if output suggests it's an image
+                                    if any(img_type in output.lower() for img_type in ['image', 'png', 'jpeg', 'jpg']):
+                                        file_type_verified = True
+                                    else:
+                                        print("File command doesn't recognize this as an image")
+                                except Exception as file_cmd_error:
+                                    print(f"File command verification failed: {file_cmd_error}")
+                            
+                    except Exception as verify_error:
+                        print(f"Error during file verification: {verify_error}")
+                    
+                    # Final check - if we couldn't verify, but file exists and has decent size, proceed with caution
+                    if not file_type_verified and file_size > 100:  # Arbitrary minimum size
+                        print("Warning: Could not verify file type, but proceeding with caution")
+                    elif not file_type_verified:
+                        raise ValueError(f"Could not verify that downloaded file is a valid image: {photo_path}")
                     
                     # Ensure it's a valid PNG for OpenAI by converting with Pillow
                     try:

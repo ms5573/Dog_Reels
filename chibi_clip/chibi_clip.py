@@ -1204,27 +1204,128 @@ class ChibiClipGenerator:
                         
                         # Try writing to a direct file and loading again
                         temp_image_path = os.path.join(self.output_dir, f"debug_image_{uuid.uuid4().hex}.png")
-                        image_content.seek(0)
-                        with open(temp_image_path, "wb") as tmp_file:
-                            tmp_file.write(image_content.getvalue())
-                        
-                        if self.verbose:
-                            print(f"Wrote {os.path.getsize(temp_image_path)} bytes to {temp_image_path}")
-                        
-                        # Try loading the direct file
-                        img = Image.open(temp_image_path)
-                        img_format = img.format
-                        img_mode = img.mode
-                        img_size = img.size
-                        if self.verbose:
-                            print(f"Successfully loaded from temp file: format={img_format}, mode={img_mode}, size={img_size}")
-                        
-                        # Use the temp file instead going forward
-                        photo_path = temp_image_path
-                        
-                        # Close the image
-                        img.close()
-                    
+                        try:
+                            # Ensure output directory exists and is writable
+                            if not os.path.exists(self.output_dir):
+                                os.makedirs(self.output_dir, exist_ok=True)
+                                if self.verbose:
+                                    print(f"Created output directory: {self.output_dir}")
+                            
+                            # Test directory permissions
+                            perm_test_file = os.path.join(self.output_dir, "permission_test.txt")
+                            try:
+                                with open(perm_test_file, "w") as f:
+                                    f.write("Permission test")
+                                os.remove(perm_test_file)
+                                if self.verbose:
+                                    print(f"Output directory {self.output_dir} is writable")
+                            except (IOError, PermissionError) as perm_error:
+                                if self.verbose:
+                                    print(f"Output directory permission error: {perm_error}")
+                                # Try temp directory as fallback
+                                temp_dir = tempfile.gettempdir()
+                                temp_image_path = os.path.join(temp_dir, f"debug_image_{uuid.uuid4().hex}.png")
+                                if self.verbose:
+                                    print(f"Using system temp directory instead: {temp_dir}")
+                            
+                            # Write image data to file, using with statement for proper closing
+                            image_content.seek(0)
+                            img_data = image_content.getvalue()
+                            
+                            if self.verbose:
+                                print(f"Writing {len(img_data)} bytes to {temp_image_path}")
+                                
+                            with open(temp_image_path, "wb") as tmp_file:
+                                tmp_file.write(img_data)
+                            
+                            # Verify file was created and has content
+                            if not os.path.exists(temp_image_path):
+                                raise IOError(f"Failed to create file: {temp_image_path}")
+                            
+                            if os.path.getsize(temp_image_path) == 0:
+                                raise IOError(f"File was created but is empty: {temp_image_path}")
+                                
+                            file_size = os.path.getsize(temp_image_path)
+                            if self.verbose:
+                                print(f"Wrote {file_size} bytes to {temp_image_path}")
+                            
+                            # Try loading the direct file after verifying it exists with content
+                            try:
+                                img = Image.open(temp_image_path)
+                                img_format = img.format
+                                img_mode = img.mode
+                                img_size = img.size
+                                if self.verbose:
+                                    print(f"Successfully loaded from temp file: format={img_format}, mode={img_mode}, size={img_size}")
+                                
+                                # Use the temp file instead going forward
+                                photo_path = temp_image_path
+                                
+                                # Close the image
+                                img.close()
+                            except Exception as img_load_error:
+                                if self.verbose:
+                                    print(f"Failed to open saved image: {img_load_error}")
+                                    
+                                    # Try to verify file type with file command
+                                    try:
+                                        import subprocess
+                                        result = subprocess.run(['file', temp_image_path], capture_output=True, text=True)
+                                        print(f"File command output for temp file: {result.stdout}")
+                                    except Exception as file_cmd_error:
+                                        print(f"Could not run 'file' command on temp file: {file_cmd_error}")
+                                
+                                # Try a different approach: convert directly with Pillow
+                                try:
+                                    if self.verbose:
+                                        print("Attempting direct conversion using PIL")
+                                    
+                                    # Start with original photo
+                                    with open(photo_path, "rb") as f:
+                                        original_data = f.read()
+                                    
+                                    # Force conversion to clean PNG
+                                    from io import BytesIO
+                                    input_buffer = BytesIO(original_data)
+                                    output_buffer = BytesIO()
+                                    
+                                    # Try different ways of opening the image
+                                    try:
+                                        direct_img = Image.open(input_buffer)
+                                    except Exception as e:
+                                        if self.verbose:
+                                            print(f"Error opening with PIL: {e}, trying with a different approach")
+                                        # Try reading as raw bytes
+                                        from PIL import Image, ImageFile
+                                        ImageFile.LOAD_TRUNCATED_IMAGES = True
+                                        input_buffer.seek(0)
+                                        direct_img = Image.open(input_buffer)
+                                    
+                                    # Convert to RGB for safety
+                                    if direct_img.mode != "RGB":
+                                        direct_img = direct_img.convert("RGB")
+                                    
+                                    # Save to new PNG file
+                                    direct_img.save(temp_image_path, "PNG")
+                                    direct_img.close()
+                                    
+                                    # Verify the new file
+                                    img = Image.open(temp_image_path)
+                                    if self.verbose:
+                                        print(f"Successfully converted and saved as PNG: format={img.format}, mode={img.mode}")
+                                    img.close()
+                                    
+                                    # Update photo path to use this file
+                                    photo_path = temp_image_path
+                                except Exception as pil_convert_error:
+                                    if self.verbose:
+                                        print(f"Direct PIL conversion also failed: {pil_convert_error}")
+                                    raise ValueError(f"Could not convert image to a usable format: {img_load_error}")
+                        except Exception as file_error:
+                            if self.verbose:
+                                print(f"Error saving debug image file: {file_error}")
+                            raise ValueError(f"Could not save debug image file: {file_error}")
+                     
                     # Reset BytesIO position after checks
                     image_content.seek(0)
                     

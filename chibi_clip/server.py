@@ -9,9 +9,19 @@ from werkzeug.utils import secure_filename # For secure filenames
 
 # Import Celery tasks
 try:
-    from .tasks import process_clip as process_clip_task
+    # Try importing process_clip directly
+    from .tasks import process_clip
+    # Use the process_clip task directly
+    process_clip_task = process_clip
+    print(f"Process clip task imported with name: {process_clip.name}")
 except ImportError:
-    from tasks import process_clip as process_clip_task
+    try:
+        from tasks import process_clip
+        process_clip_task = process_clip
+        print(f"Process clip task imported with name: {process_clip.name}")
+    except ImportError:
+        print("ERROR: Failed to import process_clip task")
+        raise
 
 # Import S3 storage
 try:

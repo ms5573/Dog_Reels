@@ -23,7 +23,16 @@ load_dotenv()
 
 # Initialize Celery
 redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+print(f"Worker initializing with Redis URL: {redis_url}")
 app = Celery('chibi_clip', broker=redis_url, backend=redis_url)
+
+# Verify Redis connection
+try:
+    # Force a connection check
+    app.backend.client.ping()
+    print("Successfully connected to Redis backend")
+except Exception as e:
+    print(f"WARNING: Redis connection check failed: {e}")
 
 # Configure Celery
 app.conf.update(
@@ -51,8 +60,9 @@ use_s3 = os.getenv('USE_S3_STORAGE', 'false').lower() == 'true'
 output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Output")
 os.makedirs(output_dir, exist_ok=True)
 
-# Task to process a video clip
-@app.task(bind=True, max_retries=3, name="process_clip")
+# Register tasks explicitly
+# Create a unique task name that will be consistent across services
+@app.task(bind=True, max_retries=3, name='chibi_clip.tasks.process_clip')
 def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16", duration=5, 
                 extended_duration=45, use_local_storage=False, birthday_message=None):
     """

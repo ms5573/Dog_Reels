@@ -7,7 +7,7 @@ from io import BytesIO
 import urllib.request
 import tempfile
 import numpy as np
-from PIL import Image, ImageFile
+from PIL import Image, ImageFile, ImageDraw, ImageFont
 import imghdr
 # Import specific modules from moviepy
 from moviepy.video.io.VideoFileClip import VideoFileClip
@@ -1119,83 +1119,202 @@ class ChibiClipGenerator:
                     if self.verbose:
                         print(f"INFO: Creating birthday card slate with message: '{birthday_message}'")
                     try:
+                        # MAJOR CHANGE: Completely bypass MoviePy's TextClip/ImageClip for the birthday card
+                        # due to ImageMagick security policy issues in containerized environments
                         assets_dir = os.path.join(os.path.dirname(__file__), "assets")
                         
-                        # Get the dimensions of the animated video to ensure consistent resolution
-                        video_width, video_height = final_animated_video_obj.size
-                        if self.verbose: 
-                            print(f"INFO: Animated video dimensions: {video_width}x{video_height}")
-                        
-                        # Choose the appropriate backdrop based on dimensions
+                        # Choose the backdrop image
                         if video_width == 720 and video_height == 1280:
-                            # Use the pre-sized backdrop for 720x1280 videos
                             backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
-                            if self.verbose:
-                                print(f"INFO: Using pre-sized backdrop (720x1280) for perfect fit")
+                            if not os.path.exists(backdrop_path):
+                                backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
                         else:
-                            # Use the original backdrop for other dimensions
                             backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
-                            if self.verbose:
-                                print(f"INFO: Using original backdrop that will need resizing")
                         
                         if not os.path.exists(backdrop_path):
                             if self.verbose:
-                                print(f"WARNING: Selected backdrop image not found at {backdrop_path}. Trying alternative version.")
-                                if video_width == 720 and video_height == 1280:
-                                    backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop.png")
-                                else:
-                                    backdrop_path = os.path.join(assets_dir, "birthday_card_backdrop_v2.png")
-                                    
-                                if not os.path.exists(backdrop_path):
-                                    print(f"WARNING: Alternative backdrop image also not found. Skipping card slate.")
-                                    raise FileNotFoundError(f"No backdrop images found in {assets_dir}")
-                        
-                        card_slate_duration = 5 # seconds
-                        
-                        # Memory optimization: Load backdrop with target resolution matching video dimensions
-                        if self.verbose: print(f"INFO: Loading backdrop image from {backdrop_path}")
-                        backdrop_img = Image.open(backdrop_path)
-                        # Resize image before creating ImageClip to reduce memory
-                        if backdrop_img.size != (video_width, video_height):
-                            if self.verbose: print(f"INFO: Pre-resizing backdrop image to {video_width}x{video_height}")
-                            backdrop_img = backdrop_img.resize((video_width, video_height), Image.LANCZOS)
-                            resized_backdrop_path = os.path.join(temp_dir, "resized_backdrop.png")
-                            backdrop_img.save(resized_backdrop_path)
-                            backdrop_img.close()
-                            backdrop_clip = ImageClip(resized_backdrop_path).set_duration(card_slate_duration)
+                                print(f"WARNING: No backdrop images found. Skipping card slate.")
+                            # Just proceed with the animated clip only
                         else:
+                            # Create a static image with text using PIL instead of TextClip
+                            if self.verbose: print(f"INFO: Creating card slate using PIL and FFmpeg (bypassing MoviePy)")
+                            
+                            # 1. Open and resize the backdrop
+                            backdrop_img = Image.open(backdrop_path)
+                            if backdrop_img.size != (video_width, video_height):
+                                if self.verbose: print(f"INFO: Resizing backdrop to {video_width}x{video_height}")
+                                backdrop_img = backdrop_img.resize((video_width, video_height), Image.LANCZOS)
+                            
+                            # 2. Add text to the image
+                            draw = ImageDraw.Draw(backdrop_img)
+                            text_color = (255, 255, 255)  # White
+                            
+                            # Try to find a font - use system fonts or default
+                            try:
+                                # Look in common font locations
+                                font_locations = [
+                                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
+                                    "/usr/share/fonts/TTF/Arial.ttf",                        # Some Linux
+                                    "/Library/Fonts/Arial.ttf",                              # macOS
+                                    "C:\\Windows\\Fonts\\Arial.ttf",                         # Windows
+                                    # Add fallbacks
+                                    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                                    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf", 
+                                ]
+                                
+                                font = None
+                                for font_path in font_locations:
+                                    if os.path.exists(font_path):
+                                        if self.verbose: print(f"INFO: Using font: {font_path}")
+                                        try:
+                                            font = ImageFont.truetype(font_path, 70)
+                                            break
+                                        except Exception as font_e:
+                                            if self.verbose: print(f"WARNING: Could not load font {font_path}: {font_e}")
+                                
+                                # If no font found, use default
+                                if font is None:
+                                    if self.verbose: print("INFO: Using default font")
+                                    font = ImageFont.load_default()
+                                    # Make default font bigger if possible
+                                    if hasattr(font, 'size'):
+                                        for size in [70, 60, 50, 40, 36]:
+                                            try:
+                                                font = ImageFont.truetype(font.path, size)
+                                                break
+                                            except:
+                                                continue
+                            
+                            except Exception as font_e:
+                                if self.verbose: print(f"WARNING: Font loading error: {font_e}. Using default.")
+                                font = ImageFont.load_default()
+                            
+                            # Calculate text position - center of image
+                            text_width, text_height = draw.textsize(birthday_message, font=font) if hasattr(draw, 'textsize') else (video_width//2, video_height//5)
+                            text_position = ((video_width - text_width) // 2, (video_height - text_height) // 2)
+                            
+                            # Draw text with "stroke" by drawing the text in black with offsets
+                            stroke_width = 2
+                            shadow_color = (0, 0, 0)  # Black shadow/stroke
+                            for dx, dy in [(x, y) for x in range(-stroke_width, stroke_width + 1) for y in range(-stroke_width, stroke_width + 1)]:
+                                if dx != 0 or dy != 0:  # Skip the center position (that's for the main text)
+                                    draw.text((text_position[0] + dx, text_position[1] + dy), birthday_message, font=font, fill=shadow_color)
+                            
+                            # Now draw the main text
+                            draw.text(text_position, birthday_message, font=font, fill=text_color)
+                            
+                            # Save the composite image
+                            card_slate_path = os.path.join(temp_dir, "birthday_card_slate.png")
+                            backdrop_img.save(card_slate_path)
                             backdrop_img.close()
-                            backdrop_clip = ImageClip(backdrop_path).set_duration(card_slate_duration)
-                        
-                        if self.verbose: print(f"INFO: Creating TextClip for message.")
-                        txt_clip = TextClip(birthday_message, 
-                                            fontsize=70, 
-                                            color='white', 
-                                            font='Arial-Bold', 
-                                            stroke_color='black', 
-                                            stroke_width=2,
-                                            method='caption',
-                                            size=(backdrop_clip.w * 0.8, None) 
-                                            )
-                        txt_clip = txt_clip.set_position('center').set_duration(card_slate_duration)
-                        
-                        if self.verbose: print(f"INFO: Compositing backdrop and text.")
-                        card_slate = CompositeVideoClip([backdrop_clip, txt_clip], size=backdrop_clip.size).set_duration(card_slate_duration)
-                        
-                        # The resizing is now handled before creating the ImageClip, so we don't need to resize the card_slate
-                        
-                        if self.verbose: print(f"INFO: Concatenating card slate with animated video.")
-                        # Use method="compose" for smoother transitions between clips
-                        final_video_to_write = concatenate_videoclips([card_slate, final_animated_video_obj], method="compose")
-                        if self.verbose:
-                            print(f"INFO: Birthday card slate created and prepended. New total duration approx: {final_video_to_write.duration:.2f}s")
+                            
+                            # How long the slate should appear (5 seconds)
+                            card_slate_duration = 5
+                            
+                            # Convert the static image to a video clip using FFmpeg
+                            # This is MUCH more memory efficient than using MoviePy's ImageClip
+                            slate_video_path = os.path.join(temp_dir, "birthday_card_slate.mp4")
+                            
+                            # Create a video from the static image
+                            ffmpeg_slate_cmd = [
+                                "ffmpeg", "-y",
+                                "-loop", "1",
+                                "-i", card_slate_path,
+                                "-c:v", "libx264",
+                                "-t", str(card_slate_duration),
+                                "-pix_fmt", "yuv420p",
+                                "-vf", f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2",
+                                "-r", "24",
+                                slate_video_path
+                            ]
+                            
+                            if self.verbose:
+                                print(f"INFO: Creating slate video with FFmpeg: {' '.join(ffmpeg_slate_cmd)}")
+                                
+                            try:
+                                subprocess.run(ffmpeg_slate_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                
+                                if os.path.exists(slate_video_path) and os.path.getsize(slate_video_path) > 0:
+                                    # Save the final animated video first
+                                    animated_video_path = os.path.join(temp_dir, "animated_part.mp4")
+                                    
+                                    if self.verbose:
+                                        print(f"INFO: Writing animated video portion to temporary file: {animated_video_path}")
+                                    
+                                    # Write the animated portion with reduced quality settings to save memory
+                                    final_animated_video_obj.write_videofile(
+                                        animated_video_path,
+                                        codec="libx264",
+                                        audio_codec="aac",
+                                        fps=24,
+                                        bitrate="5000k",
+                                        preset="ultrafast",  # Use ultrafast for temp file
+                                        threads=2,
+                                        ffmpeg_params=["-pix_fmt", "yuv420p", "-bufsize", "5000k"],
+                                        logger=None,
+                                        verbose=False
+                                    )
+                                    
+                                    # Clear any resources no longer needed
+                                    if final_animated_video_obj and hasattr(final_animated_video_obj, 'close'):
+                                        final_animated_video_obj.close()
+                                        final_animated_video_obj = None
+                                    
+                                    # Use FFmpeg to concatenate the slate and the animated video
+                                    # Create a concat file
+                                    concat_file_path = os.path.join(temp_dir, "concat.txt")
+                                    with open(concat_file_path, "w") as f:
+                                        f.write(f"file '{os.path.abspath(slate_video_path)}'\n")
+                                        f.write(f"file '{os.path.abspath(animated_video_path)}'\n")
+                                    
+                                    if output_path is None:
+                                        output_path = f"chibi_clip_with_music_{int(time.time())}.mp4"
+                                    
+                                    ffmpeg_concat_cmd = [
+                                        "ffmpeg", "-y",
+                                        "-f", "concat",
+                                        "-safe", "0",
+                                        "-i", concat_file_path,
+                                        "-c", "copy",  # Just copy, don't re-encode
+                                        output_path
+                                    ]
+                                    
+                                    if self.verbose:
+                                        print(f"INFO: Concatenating videos with FFmpeg: {' '.join(ffmpeg_concat_cmd)}")
+                                        
+                                    subprocess.run(ffmpeg_concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                    
+                                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                                        if self.verbose:
+                                            print(f"✅ Final video with birthday card slate saved to {output_path}")
+                                        return output_path
+                                    else:
+                                        if self.verbose:
+                                            print("WARNING: Failed to create concatenated video. Falling back to animated part only.")
+                                        # Copy the animated part as the result
+                                        shutil.copy(animated_video_path, output_path)
+                                        return output_path
+                                else:
+                                    if self.verbose:
+                                        print("WARNING: Failed to create slate video. Proceeding with animated video only.")
+                            except subprocess.CalledProcessError as ffmpeg_e:
+                                if self.verbose:
+                                    print(f"WARNING: FFmpeg command failed: {ffmpeg_e}")
+                                    print("Proceeding with the animated portion only.")
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"WARNING: Error during slate video creation: {e}")
+                                    print("Proceeding with the animated portion only.")
+                            
                     except Exception as slate_e:
                         if self.verbose:
                             print(f"ERROR: Error creating birthday card slate: {slate_e}. Proceeding without it.")
-                        import traceback
-                        traceback.print_exc()
+                            import traceback
+                            traceback.print_exc()
                 # --- BIRTHDAY CARD SLATE LOGIC END ---
                 
+                # If we reach here, it means we're using the original final_animated_video_obj
+                # (Either because there's no birthday message or the slate creation failed)
                 if output_path is None:
                     base_filename = "chibi_clip_with_music"
                     output_path = f"{base_filename}_{int(time.time())}.mp4"
@@ -1203,30 +1322,23 @@ class ChibiClipGenerator:
                 if self.verbose:
                     print(f"⑨ Writing final video to {output_path}")
                 
-                # Memory optimization: Use smaller bufsize and threads
+                # Even more memory optimization: Use ultrafast preset and lower bitrate
                 final_video_to_write.write_videofile(
                     output_path, 
                     codec="libx264", 
                     audio_codec="aac", 
                     fps=24,
-                    bitrate="5000k",  # Lower bitrate to reduce file size and memory
-                    preset="faster",   # Use faster preset which uses less memory
-                    threads=2,        # Limit threads to reduce memory usage
+                    bitrate="4000k",  # Further reduced bitrate
+                    preset="ultrafast",  # Use ultrafast (lowest memory usage)
+                    threads=2,
                     ffmpeg_params=[
-                        "-pix_fmt", "yuv420p",  # More compatible pixel format
-                        "-bufsize", "5000k",    # Smaller buffer size
-                        "-maxrate", "8000k"     # Limit maximum bitrate
+                        "-pix_fmt", "yuv420p",
+                        "-bufsize", "4000k",
+                        "-maxrate", "6000k"
                     ],
                     logger=None,
-                    verbose=False    # Disable internal verbosity to reduce output
+                    verbose=False
                 )
-                
-                if os.path.exists(output_path):
-                    if self.verbose:
-                        print(f"✅ Video with music saved to {output_path}")
-                    return output_path
-                else:
-                    raise RuntimeError(f"Failed to create video file at {output_path}")
             
             except MemoryError as mem_e:
                 # Handle extreme memory pressure with ffmpeg direct manipulation if possible

@@ -22,13 +22,13 @@ class S3Storage:
             aws_region: AWS region (defaults to env var AWS_REGION)
         """
         self.bucket_name = bucket_name or os.getenv('S3_BUCKET_NAME')
-        self.region = aws_region or os.getenv('AWS_REGION', 'us-east-1')
+        self.region = aws_region or os.getenv('AWS_REGION', 'us-east-2')
         
         if not self.bucket_name:
             raise ValueError("S3 bucket name not provided. Set S3_BUCKET_NAME environment variable.")
         
-        # Initialize S3 client
-        self.s3 = boto3.client('s3')
+        # Initialize S3 client with the specific region
+        self.s3 = boto3.client('s3', region_name=self.region)
         
         # Public URL format
         self.url_format = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{{}}"

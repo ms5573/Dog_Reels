@@ -4,6 +4,9 @@ import uuid
 import tempfile # For secure temporary file creation
 from werkzeug.utils import secure_filename # For secure filenames
 
+# Note: This server has been modified to support distributed deployment with Render.com
+# It uploads files to S3 and passes S3 URLs between web and worker services.
+
 # Import Celery tasks
 try:
     from .tasks import process_clip as process_clip_task
@@ -223,17 +226,16 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         audio_path = saved_audio_path
     
     # If S3 storage is enabled, upload the input files
-    s3_photo_path = None
-    s3_audio_path = None
+    s3_photo_url = None
+    s3_audio_url = None
     
     if use_s3 and s3_storage:
         try:
             # Upload the input photo to S3
-            with open(saved_path, 'rb') as f:
-                s3_photo_url, s3_photo_key = s3_storage.upload_file(
-                    saved_path, 
-                    key_prefix="inputs"
-                )
+            s3_photo_url, s3_photo_key = s3_storage.upload_file(
+                saved_path, 
+                key_prefix="inputs"
+            )
             
             app.logger.info(f"Uploaded input photo to S3: {s3_photo_url}")
             
@@ -244,15 +246,27 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                     key_prefix="inputs"
                 )
                 app.logger.info(f"Uploaded input audio to S3: {s3_audio_url}")
-                s3_audio_path = s3_audio_url
+            elif audio_path:  # If using default birthday song
+                # We need to upload the default audio file to S3 as well
+                s3_audio_url, s3_audio_key = s3_storage.upload_file(
+                    audio_path,
+                    key_prefix="inputs"
+                )
+                app.logger.info(f"Uploaded default audio to S3: {s3_audio_url}")
         except Exception as e:
             app.logger.error(f"Error uploading to S3: {e}")
-            # Continue with local storage
+            return jsonify({"error": f"S3 upload failed: {str(e)}"}), 500
+    else:
+        app.logger.error("S3 storage is required for distributed processing")
+        return jsonify({"error": "S3 storage must be enabled for this application"}), 500
         
     if SERVER_VERBOSE:
         print(f"File saved to: {saved_path}")
+        print(f"S3 photo URL: {s3_photo_url}")
         if audio_path:
             print(f"Audio file path: {audio_path}")
+            if s3_audio_url:
+                print(f"S3 audio URL: {s3_audio_url}")
         print(f"Using local storage: {use_local_storage}")
         print(f"Using S3 storage: {use_s3}")
         if action == "birthday-dance":
@@ -264,11 +278,11 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         
         # Launch the task
         task = process_clip_task.delay(
-            photo_path=saved_path, 
+            photo_url=s3_photo_url,  # Pass S3 URL instead of local path
+            audio_url=s3_audio_url,  # Pass S3 URL instead of local path
             action=action, 
             ratio=ratio, 
             duration=duration,
-            audio_path=audio_path,
             extended_duration=extended_duration,
             use_local_storage=use_local_storage,
             birthday_message=birthday_message

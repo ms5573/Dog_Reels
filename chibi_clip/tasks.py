@@ -18,6 +18,8 @@ import shutil
 from PIL import Image
 import io
 import re # For parsing XML endpoint
+import boto3 # Add boto3 import
+from botocore.exceptions import ClientError # For boto3 error handling
 
 # Try to import magic but don't fail if it's not available
 try:
@@ -108,285 +110,210 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
     try:
         # Create a temporary directory for processing
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Download photo from S3
-            photo_path = None
+            photo_path = None # Will be path to local downloaded file
+            final_audio_path_for_generator = None # Will be path to local audio for generator
+
+            # --- PHOTO DOWNLOAD ---
             if photo_url:
-                try:
-                    # Extract filename from URL
-                    parsed_url = urlparse(photo_url)
-                    filename = os.path.basename(parsed_url.path)
-                    photo_path = os.path.join(temp_dir, filename)
-                    
-                    # Download the file
-                    response = requests.get(photo_url, stream=True)
-                    response.raise_for_status()
-                    
-                    # Check content type and headers
-                    content_type = response.headers.get('Content-Type', '')
-                    content_length = response.headers.get('Content-Length', 'unknown')
-                    final_url_accessed = response.url # Get the final URL after any redirects
-                    print(f"S3 download: Status {response.status_code}, Content-Type='{content_type}', Content-Length='{content_length}', Final URL='{final_url_accessed}' for original URL='{photo_url}'")
-                    
-                    # Check if content type suggests this is actually an image
-                    if not content_type.startswith('image/'):
-                        # Optional: Handle S3 PermanentRedirect by retrying with the correct endpoint
-                        # This is generally better fixed at the source of URL generation (ensure correct region).
-                        # Uncomment if you want the worker to attempt to self-correct a regional redirect.
-                        # if response.status_code == 301 and 'application/xml' in content_type and b'<Code>PermanentRedirect</Code>' in response.content:
-                        #     try:
-                        #         # Ensure we have the full content if streamed and small, or re-fetch if necessary for parsing
-                        #         # For simplicity here, assuming response.content is available or re-fetch if it was streamed and consumed.
-                        #         # If response was streamed (iter_content), response.content might be empty.
-                        #         # A more robust solution might re-request without stream=True if a redirect is detected.
-                        #         xml_content = response.content # This might need adjustment if stream=True was fully consumed.
-                        #         if not xml_content:
-                        #             # Re-fetch to get content if stream was consumed
-                        #             temp_resp = requests.get(photo_url, timeout=30)
-                        #             xml_content = temp_resp.content
+                parsed_url = urlparse(photo_url)
+                filename = os.path.basename(parsed_url.path)
+                if not filename:  # Handle cases like "bucket/" or if path is just "/"
+                    timestamp = int(time.time())
+                    filename = f"downloaded_photo_{timestamp}" # Add timestamp for uniqueness
+                
+                _, ext = os.path.splitext(filename)
+                if not ext: # Ensure there's an extension
+                    # Try to get extension from the photo_url path itself if filename part had none
+                    _, url_ext = os.path.splitext(parsed_url.path)
+                    if url_ext and len(url_ext) <= 5 : # Basic check for a valid-looking extension
+                         filename += url_ext
+                    else:
+                         filename += ".jpg" # Default if no extension found or looks invalid
+                        
+                local_photo_file_path = os.path.join(temp_dir, filename)
 
-                        #         endpoint_match = re.search(rb'<Endpoint>(.*?)<\/Endpoint>', xml_content)
-                        #         if endpoint_match:
-                        #             correct_endpoint = endpoint_match.group(1).decode('utf-8')
-                        #             # Ensure scheme is present for urlparse
-                        #             parsed_original_url = urlparse(photo_url if photo_url.startswith(('http','https')) else 'http://' + photo_url)
-                        #             correct_url = parsed_original_url._replace(netloc=correct_endpoint).geturl()
-                        #             print(f"S3 PermanentRedirect: Detected new endpoint '{correct_endpoint}'. Retrying download from '{correct_url}'...")
-                        #             response = requests.get(correct_url, stream=True, timeout=60)
-                        #             response.raise_for_status()
-                        #             content_type = response.headers.get('Content-Type', '')
-                        #             final_url_accessed = response.url
-                        #             print(f"S3 download after redirect: Status {response.status_code}, Content-Type='{content_type}', Final URL='{final_url_accessed}'")
-                        #             if not content_type.startswith('image/'):
-                        #                 # If still not an image after redirect, then it's a genuine error
-                        #                 raise ValueError(f"Content-Type still not image/* after redirect: {content_type}")
-                        #         else:
-                        #             raise ValueError("S3 PermanentRedirect XML received, but couldn't parse new endpoint.")
-                        #     except Exception as redirect_e:
-                        #         print(f"Error handling S3 redirect: {redirect_e}")
-                        #         # Fall through to the original error handling if redirect logic fails
+                if use_s3: # Global flag indicating if S3 URLs should be treated as S3
+                    print(f"Attempting S3 download for photo: {photo_url}")
+                    aws_region_worker = os.getenv("AWS_REGION")
+                    aws_access_key_id_worker = os.getenv("AWS_ACCESS_KEY_ID")
+                    aws_secret_access_key_worker = os.getenv("AWS_SECRET_ACCESS_KEY")
+                    
+                    if not all([aws_region_worker, aws_access_key_id_worker, aws_secret_access_key_worker]):
+                        raise ValueError("Worker S3 photo download: AWS credentials/region not configured in worker environment.")
 
-                        # If, after potential redirect handling (or if not enabled), it's still not an image:
+                    s3_bucket_name = None
+                    s3_object_key = None
+
+                    if parsed_url.hostname and '.s3.' in parsed_url.hostname: # Standard virtual-hosted style or path-style URL
+                        s3_bucket_name = parsed_url.hostname.split('.')[0]
+                        s3_object_key = parsed_url.path.lstrip('/')
+                    elif parsed_url.scheme == 's3': # s3://bucket/key format
+                        s3_bucket_name = parsed_url.netloc
+                        s3_object_key = parsed_url.path.lstrip('/')
+                    
+                    # If bucket name couldn't be reliably parsed from URL (e.g. path-style S3 access, though less common for new buckets)
+                    # or if key is empty, this might indicate an issue or a need for S3_BUCKET_NAME env var as a fallback.
+                    # For this implementation, we'll rely on bucket being in hostname or s3:// scheme.
+                    if not s3_bucket_name and os.getenv("S3_BUCKET_NAME"): # Fallback if needed and available
+                        s3_bucket_name = os.getenv("S3_BUCKET_NAME")
+                        # In this case, the full photo_url path might be the key
+                        if not s3_object_key: s3_object_key = parsed_url.path.lstrip('/')
+
+
+                    if not s3_bucket_name or not s3_object_key:
+                        raise ValueError(f"Could not determine S3 bucket/key for photo URL: {photo_url}")
+
+                    try:
+                        s3_client = boto3.client(
+                            's3',
+                            aws_access_key_id=aws_access_key_id_worker,
+                            aws_secret_access_key=aws_secret_access_key_worker,
+                            region_name=aws_region_worker
+                        )
+                        print(f"Downloading s3://{s3_bucket_name}/{s3_object_key} to {local_photo_file_path}")
+                        s3_client.download_file(s3_bucket_name, s3_object_key, local_photo_file_path)
+                        photo_path = local_photo_file_path
+                        print(f"S3 Photo Download successful: {photo_path}")
+                    except ClientError as e:
+                        print(f"S3 Photo Download Error for {photo_url} (Key: s3://{s3_bucket_name}/{s3_object_key}): {e}")
+                        raise
+                    except Exception as e:
+                        print(f"Unexpected error during S3 photo download setup for {photo_url}: {e}")
+                        raise
+                else: # Not using S3, assume photo_url is a direct downloadable URL
+                    print(f"Attempting direct HTTP download for photo: {photo_url}")
+                    try:
+                        response = requests.get(photo_url, stream=True, timeout=60)
+                        response.raise_for_status()
+                        
+                        content_type = response.headers.get('Content-Type', '')
+                        final_url_accessed = response.url
+                        print(f"Direct Photo Download: Status {response.status_code}, Content-Type='{content_type}', Final URL='{final_url_accessed}'")
+
                         if not content_type.startswith('image/'):
+                            # Try to get a preview of the content if it's text-based
                             preview_text = ""
                             try:
-                                # response.content is more reliable here than response.text if it was already read
-                                # or if the initial request wasn't stream=True (e.g. in the commented redirect block)
-                                # However, for the initial streamed response, we need to be careful.
-                                # Assuming `response` is the one from the first `requests.get(photo_url, stream=True)`
-                                # and we are here because content_type is not image/*
-                                # We can try to read from the stream now.
-                                if response.raw.readable():
-                                    chunk = response.raw.read(500) # Read 500 bytes from raw stream
-                                    try:
-                                        preview_text = chunk.decode('utf-8', errors='replace')
-                                    except Exception:
-                                        preview_text = chunk.hex() # Fallback to hex if decode fails
+                                if "text" in content_type or "xml" in content_type or "json" in content_type :
+                                     preview_text = response.text[:200] # Get first 200 chars
                                 else:
-                                     preview_text = "(Stream not readable for preview or already consumed)"
-                            except Exception as e_text_preview:
-                                preview_text = f"(Could not get text preview: {e_text_preview})"
-                            
-                            error_message = (
-                                f"Invalid Content-Type received from photo_url. Expected 'image/...', but got '{content_type}'. "
-                                f"Original URL: {photo_url}, Final URL: {final_url_accessed}. "
-                                f"Response preview: {preview_text}..."
-                            )
-                            print(f"ERROR: {error_message}")
-                            raise ValueError(error_message)
-                    
-                    # First save the raw downloaded file
-                    raw_bytes = b''
-                    download_success = False
-                    file_size = 0
-                    
-                    # Try multiple download methods if needed
-                    for download_attempt in range(3):  # Try up to 3 different methods
-                        try:
-                            if download_attempt == 0:
-                                # Method 1: Stream with requests
-                                print(f"Download attempt {download_attempt+1}: Using requests.iter_content")
-                                with open(photo_path, 'wb') as f:
-                                    for chunk in response.iter_content(chunk_size=8192):
-                                        f.write(chunk)
-                                        # Save first chunk for debugging
-                                        if not raw_bytes:
-                                            raw_bytes = chunk[:32]  # First 32 bytes for magic number checking
-                            elif download_attempt == 1:
-                                # Method 2: Direct requests content
-                                print(f"Download attempt {download_attempt+1}: Using requests.content directly")
-                                response = requests.get(photo_url)
-                                with open(photo_path, 'wb') as f:
-                                    f.write(response.content)
-                                if not raw_bytes and response.content:
-                                    raw_bytes = response.content[:32]
-                            else:
-                                # Method 3: urllib
-                                print(f"Download attempt {download_attempt+1}: Using urllib")
-                                import urllib.request
-                                urllib.request.urlretrieve(photo_url, photo_path)
-                                with open(photo_path, 'rb') as f:
-                                    first_bytes = f.read(32)
-                                    if first_bytes and not raw_bytes:
-                                        raw_bytes = first_bytes
-                            
-                            # Check if file exists and has size
-                            if os.path.exists(photo_path) and os.path.getsize(photo_path) > 0:
-                                file_size = os.path.getsize(photo_path)
-                                print(f"Downloaded file size: {file_size} bytes")
-                                download_success = True
-                                break  # Success, exit the loop
-                            else:
-                                print(f"Download attempt {download_attempt+1} resulted in empty file")
-                        except Exception as download_error:
-                            print(f"Download attempt {download_attempt+1} failed: {download_error}")
-                    
-                    if not download_success:
-                        raise ValueError(f"All download attempts failed for {photo_url}")
-                    
-                    if raw_bytes:
-                        print(f"Downloaded file header bytes: {raw_bytes.hex()}")
-                    
-                    # Verify file type and convert if needed
-                    file_type_verified = False
-                    
-                    # Try various methods to verify and convert if needed
-                    try:
-                        # Method 1: Try PIL directly
-                        try:
-                            from PIL import Image, ImageFile
-                            # Allow loading truncated images
-                            ImageFile.LOAD_TRUNCATED_IMAGES = True
-                            
-                            with Image.open(photo_path) as img:
-                                img_format = img.format
-                                img_mode = img.mode
-                                img_size = img.size
-                                print(f"Successfully verified image with PIL: format={img_format}, mode={img_mode}, size={img_size}")
-                                
-                                # If format is unexpected, convert to PNG
-                                if img_format not in ('JPEG', 'PNG'):
-                                    print(f"Converting {img_format} to PNG for better compatibility")
-                                    png_path = os.path.join(temp_dir, "photo_verified.png")
-                                    img = img.convert('RGBA' if img_mode != 'RGBA' else img_mode)
-                                    img.save(png_path, format="PNG")
-                                    if os.path.exists(png_path) and os.path.getsize(png_path) > 0:
-                                        photo_path = png_path
-                                        print(f"Converted to PNG: {photo_path}")
-                                
-                                file_type_verified = True
-                        except Exception as pil_error:
-                            print(f"PIL verification failed: {pil_error}")
-                            
-                            # Method 2: Try magic if available
-                            if MAGIC_AVAILABLE:
-                                try:
-                                    mime = magic.Magic(mime=True)
-                                    detected_type = mime.from_file(photo_path)
-                                    print(f"Detected MIME type: {detected_type}")
-                                    
-                                    if detected_type.startswith('image/'):
-                                        file_type_verified = True
-                                    else:
-                                        print(f"File doesn't appear to be an image. Detected as: {detected_type}")
-                                except Exception as magic_error:
-                                    print(f"Magic verification failed: {magic_error}")
-                            
-                            # Method 3: Try file command if available
-                            if SUBPROCESS_AVAILABLE and not file_type_verified:
-                                try:
-                                    result = subprocess.run(['file', photo_path], capture_output=True, text=True)
-                                    output = result.stdout
-                                    print(f"File command output: {output}")
-                                    
-                                    # Check if output suggests it's an image
-                                    if any(img_type in output.lower() for img_type in ['image', 'png', 'jpeg', 'jpg']):
-                                        file_type_verified = True
-                                    else:
-                                        print("File command doesn't recognize this as an image")
-                                except Exception as file_cmd_error:
-                                    print(f"File command verification failed: {file_cmd_error}")
-                            
-                    except Exception as verify_error:
-                        print(f"Error during file verification: {verify_error}")
-                    
-                    # Final check - if we couldn't verify, but file exists and has decent size, proceed with caution
-                    if not file_type_verified and file_size > 100:  # Arbitrary minimum size
-                        print("Warning: Could not verify file type, but proceeding with caution")
-                    elif not file_type_verified:
-                        raise ValueError(f"Could not verify that downloaded file is a valid image: {photo_path}")
-                    
-                    # Ensure it's a valid PNG for OpenAI by converting with Pillow
-                    try:
-                        # Create a standardized PNG version
-                        png_path = os.path.join(temp_dir, "photo_standardized.png")
+                                     preview_text = "(binary content)"
+                            except Exception:
+                                preview_text = "(could not read preview)"
+                            raise ValueError(f"Invalid Content-Type '{content_type}' from photo URL {final_url_accessed}. Expected 'image/...'. Preview: {preview_text}")
                         
-                        # Open with explicit error handling
-                        try:
-                            img = Image.open(photo_path)
-                            print(f"Original image format: {img.format}, mode: {img.mode}, size: {img.size}")
-                        except Exception as img_error:
-                            print(f"Failed to open image file: {img_error}")
-                            # Try to debug the file content
-                            with open(photo_path, 'rb') as f:
-                                file_start = f.read(20)  # Read first 20 bytes
-                                print(f"File header bytes: {file_start.hex()}")
-                            raise
-                        
-                        # Convert to RGB or RGBA mode
-                        if img.mode != 'RGBA':
-                            img = img.convert('RGBA')
-                        
-                        # Save with explicit format
-                        img.save(png_path, format="PNG")
-                        
-                        # Verify the converted file
-                        if os.path.exists(png_path) and os.path.getsize(png_path) > 0:
-                            # Additional verification by reopening
-                            verify_img = Image.open(png_path)
-                            print(f"Converted PNG format: {verify_img.format}, mode: {verify_img.mode}, size: {verify_img.size}")
-                            verify_img.close()
-                            
-                            # Replace original path with standardized version
-                            photo_path = png_path
-                            print(f"Converted image to standardized PNG format: {photo_path}")
-                        else:
-                            print(f"Warning: Converted PNG file is empty or missing: {png_path}")
-                            # Continue with original file
-                    except Exception as e:
-                        print(f"Error converting image to PNG: {e}")
-                        print(traceback.format_exc())
-                        # Continue with original file if conversion fails
-                    
-                    print(f"Downloaded photo from S3: {photo_url} to {photo_path}")
-                except Exception as e:
-                    print(f"Error downloading photo from S3: {e}")
-                    raise
+                        with open(local_photo_file_path, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        photo_path = local_photo_file_path
+                        print(f"Direct HTTP Photo Download successful: {photo_path}")
+                    except requests.exceptions.RequestException as e:
+                        print(f"Direct HTTP Photo Download Error for {photo_url}: {e}")
+                        raise
             
-            # Download audio from S3 if provided
-            audio_path = None
-            if audio_url:
+            if photo_path and os.path.exists(photo_path):
+                print(f"Processing downloaded photo: {photo_path}")
                 try:
-                    # Extract filename from URL
-                    parsed_url = urlparse(audio_url)
-                    filename = os.path.basename(parsed_url.path)
-                    audio_path = os.path.join(temp_dir, filename)
+                    # Use an alias for PIL.Image to avoid potential conflicts if Image is used elsewhere
+                    from PIL import Image as PILImage, ImageFile as PILImageFile
+                    PILImageFile.LOAD_TRUNCATED_IMAGES = True # Allow loading truncated images
                     
-                    # Download the file
-                    response = requests.get(audio_url, stream=True)
-                    response.raise_for_status()
-                    with open(audio_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    print(f"Downloaded audio from S3: {audio_url} to {audio_path}")
-                except Exception as e:
-                    print(f"Error downloading audio from S3: {e}")
-                    # Continue without audio if download fails
-            elif action == "birthday-dance":
-                # Use default birthday song from the project
+                    img = PILImage.open(photo_path)
+                    # Convert to RGBA for consistency, save as PNG (OpenAI prefers PNG)
+                    png_filename = os.path.splitext(os.path.basename(photo_path))[0] + "_standardized.png"
+                    png_path = os.path.join(temp_dir, png_filename)
+                    
+                    if img.mode != 'RGBA':
+                        img = img.convert('RGBA')
+                    img.save(png_path, "PNG")
+                    photo_path = png_path # Update photo_path to the standardized PNG
+                    print(f"Photo standardized to PNG: {photo_path}")
+                except Exception as e_img_proc:
+                    print(f"Warning: Error processing/converting downloaded photo {photo_path} to PNG: {e_img_proc}. Using original download.")
+                    # photo_path remains the initially downloaded file. This might fail later if not a good image.
+            
+            # --- AUDIO DOWNLOAD ---
+            downloaded_audio_file_path = None # Path to the audio file downloaded in this task run
+            if audio_url:
+                parsed_audio_url = urlparse(audio_url)
+                audio_filename = os.path.basename(parsed_audio_url.path)
+                if not audio_filename:
+                    timestamp = int(time.time())
+                    audio_filename = f"downloaded_audio_{timestamp}"
+
+                _, audio_ext = os.path.splitext(audio_filename)
+                if not audio_ext: # Ensure it has an extension
+                    _, url_audio_ext = os.path.splitext(parsed_audio_url.path)
+                    if url_audio_ext and len(url_audio_ext) <=5:
+                        audio_filename += url_audio_ext
+                    else:
+                        audio_filename += ".mp3" # Default audio extension
+                        
+                local_audio_file_path = os.path.join(temp_dir, audio_filename)
+
+                if use_s3: # Global flag for S3
+                    print(f"Attempting S3 download for audio: {audio_url}")
+                    aws_region_worker = os.getenv("AWS_REGION")
+                    aws_access_key_id_worker = os.getenv("AWS_ACCESS_KEY_ID")
+                    aws_secret_access_key_worker = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+                    if not all([aws_region_worker, aws_access_key_id_worker, aws_secret_access_key_worker]):
+                        print("Worker S3 audio download: AWS credentials/region not configured. Skipping S3 audio.")
+                    else:
+                        s3_audio_bucket_name = None
+                        s3_audio_object_key = None
+
+                        if parsed_audio_url.hostname and '.s3.' in parsed_audio_url.hostname:
+                            s3_audio_bucket_name = parsed_audio_url.hostname.split('.')[0]
+                            s3_audio_object_key = parsed_audio_url.path.lstrip('/')
+                        elif parsed_audio_url.scheme == 's3':
+                            s3_audio_bucket_name = parsed_audio_url.netloc
+                            s3_audio_object_key = parsed_audio_url.path.lstrip('/')
+                        
+                        if not s3_audio_bucket_name and os.getenv("S3_BUCKET_NAME"):
+                             s3_audio_bucket_name = os.getenv("S3_BUCKET_NAME")
+                             if not s3_audio_object_key: s3_audio_object_key = parsed_audio_url.path.lstrip('/')
+
+                        if not s3_audio_bucket_name or not s3_audio_object_key:
+                            print(f"Could not determine S3 bucket/key for audio URL: {audio_url}. Skipping S3 audio.")
+                        else:
+                            try:
+                                s3_client_audio = boto3.client('s3', aws_access_key_id=aws_access_key_id_worker, aws_secret_access_key=aws_secret_access_key_worker, region_name=aws_region_worker)
+                                print(f"Downloading s3://{s3_audio_bucket_name}/{s3_audio_object_key} to {local_audio_file_path}")
+                                s3_client_audio.download_file(s3_audio_bucket_name, s3_audio_object_key, local_audio_file_path)
+                                downloaded_audio_file_path = local_audio_file_path
+                                print(f"S3 Audio Download successful: {downloaded_audio_file_path}")
+                            except ClientError as e:
+                                print(f"S3 Audio Download Error for {audio_url} (Key: s3://{s3_audio_bucket_name}/{s3_audio_object_key}): {e}. Proceeding without this audio.")
+                            except Exception as e:
+                                print(f"Unexpected error during S3 audio download for {audio_url}: {e}. Proceeding without this audio.")
+                else: # Not S3, direct URL for audio
+                    print(f"Attempting direct HTTP download for audio: {audio_url}")
+                    try:
+                        response_audio = requests.get(audio_url, stream=True, timeout=30)
+                        response_audio.raise_for_status()
+                        # Optionally, add audio content-type check here if strict validation is needed
+                        with open(local_audio_file_path, 'wb') as f:
+                            for chunk in response_audio.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        downloaded_audio_file_path = local_audio_file_path
+                        print(f"Direct HTTP Audio Download successful: {downloaded_audio_file_path}")
+                    except requests.exceptions.RequestException as e:
+                        print(f"Direct HTTP Audio Download Error for {audio_url}: {e}. Proceeding without this audio.")
+            
+            # Determine final audio_path for the ChibiClipGenerator
+            if downloaded_audio_file_path and os.path.exists(downloaded_audio_file_path):
+                final_audio_path_for_generator = downloaded_audio_file_path
+            elif action == "birthday-dance": # Fallback to default birthday song
                 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                audio_path = os.path.join(project_root, "birthday_song.mp3")
-                if not os.path.exists(audio_path):
-                    print("Default birthday_song.mp3 not found")
+                default_birthday_song_path = os.path.join(project_root, "birthday_song.mp3")
+                if os.path.exists(default_birthday_song_path):
+                    final_audio_path_for_generator = default_birthday_song_path
+                    print(f"Using default birthday song: {final_audio_path_for_generator}")
+                else:
+                    print("Default birthday_song.mp3 not found. Proceeding without audio.")
+            else: # No custom audio downloaded, not birthday-dance action
+                print("No custom audio. Proceeding without audio.")
             
             if not photo_path:
                 raise ValueError("No photo path available for processing")
@@ -415,7 +342,7 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                 action=action,
                 ratio=ratio,
                 duration=duration,
-                audio_path=audio_path,
+                audio_path=final_audio_path_for_generator,
                 extended_duration=extended_duration,
                 use_local_storage=True,  # Always use local storage in processing
                 birthday_message=birthday_message

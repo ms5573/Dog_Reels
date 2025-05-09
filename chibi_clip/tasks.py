@@ -108,21 +108,52 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
                     
+                    # Verify the file exists and has content
+                    if os.path.exists(photo_path) and os.path.getsize(photo_path) > 0:
+                        print(f"Downloaded file size: {os.path.getsize(photo_path)} bytes")
+                    else:
+                        raise ValueError(f"Downloaded file is empty or doesn't exist: {photo_path}")
+                    
                     # Ensure it's a valid PNG for OpenAI by converting with Pillow
                     try:
                         # Create a standardized PNG version
                         png_path = os.path.join(temp_dir, "photo_standardized.png")
-                        with Image.open(photo_path) as img:
-                            # Convert to RGB or RGBA mode
-                            if img.mode != 'RGBA':
-                                img = img.convert('RGBA')
-                            img.save(png_path, format="PNG")
                         
-                        # Replace original path with standardized version
-                        photo_path = png_path
-                        print(f"Converted image to standardized PNG format: {photo_path}")
+                        # Open with explicit error handling
+                        try:
+                            img = Image.open(photo_path)
+                            print(f"Original image format: {img.format}, mode: {img.mode}, size: {img.size}")
+                        except Exception as img_error:
+                            print(f"Failed to open image file: {img_error}")
+                            # Try to debug the file content
+                            with open(photo_path, 'rb') as f:
+                                file_start = f.read(20)  # Read first 20 bytes
+                                print(f"File header bytes: {file_start.hex()}")
+                            raise
+                        
+                        # Convert to RGB or RGBA mode
+                        if img.mode != 'RGBA':
+                            img = img.convert('RGBA')
+                        
+                        # Save with explicit format
+                        img.save(png_path, format="PNG")
+                        
+                        # Verify the converted file
+                        if os.path.exists(png_path) and os.path.getsize(png_path) > 0:
+                            # Additional verification by reopening
+                            verify_img = Image.open(png_path)
+                            print(f"Converted PNG format: {verify_img.format}, mode: {verify_img.mode}, size: {verify_img.size}")
+                            verify_img.close()
+                            
+                            # Replace original path with standardized version
+                            photo_path = png_path
+                            print(f"Converted image to standardized PNG format: {photo_path}")
+                        else:
+                            print(f"Warning: Converted PNG file is empty or missing: {png_path}")
+                            # Continue with original file
                     except Exception as e:
                         print(f"Error converting image to PNG: {e}")
+                        print(traceback.format_exc())
                         # Continue with original file if conversion fails
                     
                     print(f"Downloaded photo from S3: {photo_url} to {photo_path}")

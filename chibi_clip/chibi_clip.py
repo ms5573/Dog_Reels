@@ -219,11 +219,21 @@ class ChibiClipGenerator:
         if self.verbose:
             print("Preprocessing image for OpenAI API...")
         
+        # Check if BytesIO contains data
+        if image_content.getbuffer().nbytes == 0:
+            raise ValueError("Image content is empty")
+            
         # Check initial size
         initial_size = len(image_content.getvalue()) / (1024 * 1024)
         if self.verbose:
             print(f"Original image size: {initial_size:.2f} MB")
-        
+            
+        # Print the first few bytes to help with debugging
+        image_content.seek(0)
+        header_bytes = image_content.read(20)
+        if self.verbose:
+            print(f"Image header bytes: {header_bytes.hex()}")
+            
         # Reset the BytesIO pointer to the start
         image_content.seek(0)
         
@@ -236,6 +246,18 @@ class ChibiClipGenerator:
         except Exception as e:
             if self.verbose:
                 print(f"Error loading image: {e}")
+                
+            # Try to save the contents to a file for debugging
+            try:
+                image_content.seek(0)
+                debug_bytes = image_content.getvalue()
+                debug_path = "/tmp/debug_image_error.bin"
+                with open(debug_path, "wb") as f:
+                    f.write(debug_bytes)
+                print(f"Saved problematic image data to {debug_path} for debugging")
+            except Exception as save_error:
+                print(f"Failed to save debug file: {save_error}")
+                
             raise ValueError(f"Could not load image: {e}")
         
         # Convert to RGBA mode (with transparency) - required for OpenAI image edits
@@ -1137,8 +1159,32 @@ class ChibiClipGenerator:
             
             if self.verbose:
                 print(f"Reading photo from: {photo_path}")
-            with open(photo_path, "rb") as f:
-                image_content = BytesIO(f.read())
+            
+            try:
+                with open(photo_path, "rb") as f:
+                    file_data = f.read()
+                    
+                # Verify we have some actual data
+                if not file_data:
+                    raise ValueError(f"No data read from file {photo_path}")
+                    
+                # Create a BytesIO object from the read data
+                image_content = BytesIO(file_data)
+                
+                # Verify the image file format
+                try:
+                    with Image.open(image_content) as img:
+                        img_format = img.format
+                        img_mode = img.mode
+                        img_size = img.size
+                        if self.verbose:
+                            print(f"Successfully loaded image: format={img_format}, mode={img_mode}, size={img_size}")
+                    # Reset BytesIO position
+                    image_content.seek(0)
+                except Exception as img_error:
+                    raise ValueError(f"Could not verify image format: {img_error}")
+            except Exception as e:
+                raise ValueError(f"Error reading image file: {e}")
             
             # Get appropriate image size based on selected ratio
             image_size = IMAGE_SIZE_MAP.get(ratio, "1024x1024")

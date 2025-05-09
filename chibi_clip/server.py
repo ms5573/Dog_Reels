@@ -276,6 +276,10 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         # Process the request asynchronously with Celery
         app.logger.info(f"Starting async task: action={action}, ratio={ratio}, duration={duration}, extended_duration={extended_duration}")
         
+        # Add detailed logging
+        print(f"DEBUG: Task parameters - photo_url={s3_photo_url}, audio_url={s3_audio_url}")
+        print(f"DEBUG: About to submit task to Celery with Redis URL: {os.environ.get('REDIS_URL')}")
+        
         # Launch the task
         task = process_clip_task.delay(
             photo_url=s3_photo_url,  # Pass S3 URL instead of local path
@@ -287,6 +291,10 @@ def generate_route(): # Renamed from generate to avoid conflict with module
             use_local_storage=use_local_storage,
             birthday_message=birthday_message
         )
+        
+        # Log task ID
+        print(f"DEBUG: Task submitted successfully with ID: {task.id}")
+        app.logger.info(f"Task submitted with ID: {task.id}")
         
         # Return the task ID so the client can poll for results
         return jsonify({

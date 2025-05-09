@@ -69,6 +69,12 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
     Returns:
         Dictionary with paths and URLs to the generated content
     """
+    # Add debug logging at task start
+    print(f"DEBUG: Task received with ID: {self.request.id}")
+    print(f"DEBUG: Task parameters - photo_url={photo_url}, audio_url={audio_url}")
+    print(f"DEBUG: Redis URL: {os.environ.get('REDIS_URL')}")
+    print(f"DEBUG: S3 storage enabled: {use_s3}")
+    
     try:
         # Create a temporary directory for processing
         with tempfile.TemporaryDirectory() as temp_dir:

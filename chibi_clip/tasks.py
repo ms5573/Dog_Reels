@@ -10,12 +10,14 @@ import os
 import time
 import tempfile
 from celery import Celery
+from celery.exceptions import Ignore # Import Ignore
 import traceback
 import requests
 from urllib.parse import urlparse
 import shutil
 from PIL import Image
 import io
+import re # For parsing XML endpoint
 
 # Try to import magic but don't fail if it's not available
 try:
@@ -127,23 +129,70 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                     
                     # Check if content type suggests this is actually an image
                     if not content_type.startswith('image/'):
-                        # Attempt to get a preview of the content if it's text-based
-                        preview_text = ""
-                        try:
-                            # response.text might consume the stream if not careful,
-                            # but for an error case, getting a preview is useful.
-                            # We're going to error out anyway.
-                            preview_text = response.text[:500] # Get up to 500 chars
-                        except Exception as e_text_preview:
-                            preview_text = f"(Could not get text preview: {e_text_preview})"
-                        
-                        error_message = (
-                            f"Invalid Content-Type received from photo_url. Expected 'image/...', but got '{content_type}'. "
-                            f"Original URL: {photo_url}, Final URL: {final_url_accessed}. "
-                            f"Response preview: {preview_text}..."
-                        )
-                        print(f"ERROR: {error_message}")
-                        raise ValueError(error_message)
+                        # Optional: Handle S3 PermanentRedirect by retrying with the correct endpoint
+                        # This is generally better fixed at the source of URL generation (ensure correct region).
+                        # Uncomment if you want the worker to attempt to self-correct a regional redirect.
+                        # if response.status_code == 301 and 'application/xml' in content_type and b'<Code>PermanentRedirect</Code>' in response.content:
+                        #     try:
+                        #         # Ensure we have the full content if streamed and small, or re-fetch if necessary for parsing
+                        #         # For simplicity here, assuming response.content is available or re-fetch if it was streamed and consumed.
+                        #         # If response was streamed (iter_content), response.content might be empty.
+                        #         # A more robust solution might re-request without stream=True if a redirect is detected.
+                        #         xml_content = response.content # This might need adjustment if stream=True was fully consumed.
+                        #         if not xml_content:
+                        #             # Re-fetch to get content if stream was consumed
+                        #             temp_resp = requests.get(photo_url, timeout=30)
+                        #             xml_content = temp_resp.content
+
+                        #         endpoint_match = re.search(rb'<Endpoint>(.*?)<\/Endpoint>', xml_content)
+                        #         if endpoint_match:
+                        #             correct_endpoint = endpoint_match.group(1).decode('utf-8')
+                        #             # Ensure scheme is present for urlparse
+                        #             parsed_original_url = urlparse(photo_url if photo_url.startswith(('http','https')) else 'http://' + photo_url)
+                        #             correct_url = parsed_original_url._replace(netloc=correct_endpoint).geturl()
+                        #             print(f"S3 PermanentRedirect: Detected new endpoint '{correct_endpoint}'. Retrying download from '{correct_url}'...")
+                        #             response = requests.get(correct_url, stream=True, timeout=60)
+                        #             response.raise_for_status()
+                        #             content_type = response.headers.get('Content-Type', '')
+                        #             final_url_accessed = response.url
+                        #             print(f"S3 download after redirect: Status {response.status_code}, Content-Type='{content_type}', Final URL='{final_url_accessed}'")
+                        #             if not content_type.startswith('image/'):
+                        #                 # If still not an image after redirect, then it's a genuine error
+                        #                 raise ValueError(f"Content-Type still not image/* after redirect: {content_type}")
+                        #         else:
+                        #             raise ValueError("S3 PermanentRedirect XML received, but couldn't parse new endpoint.")
+                        #     except Exception as redirect_e:
+                        #         print(f"Error handling S3 redirect: {redirect_e}")
+                        #         # Fall through to the original error handling if redirect logic fails
+
+                        # If, after potential redirect handling (or if not enabled), it's still not an image:
+                        if not content_type.startswith('image/'):
+                            preview_text = ""
+                            try:
+                                # response.content is more reliable here than response.text if it was already read
+                                # or if the initial request wasn't stream=True (e.g. in the commented redirect block)
+                                # However, for the initial streamed response, we need to be careful.
+                                # Assuming `response` is the one from the first `requests.get(photo_url, stream=True)`
+                                # and we are here because content_type is not image/*
+                                # We can try to read from the stream now.
+                                if response.raw.readable():
+                                    chunk = response.raw.read(500) # Read 500 bytes from raw stream
+                                    try:
+                                        preview_text = chunk.decode('utf-8', errors='replace')
+                                    except Exception:
+                                        preview_text = chunk.hex() # Fallback to hex if decode fails
+                                else:
+                                     preview_text = "(Stream not readable for preview or already consumed)"
+                            except Exception as e_text_preview:
+                                preview_text = f"(Could not get text preview: {e_text_preview})"
+                            
+                            error_message = (
+                                f"Invalid Content-Type received from photo_url. Expected 'image/...', but got '{content_type}'. "
+                                f"Original URL: {photo_url}, Final URL: {final_url_accessed}. "
+                                f"Response preview: {preview_text}..."
+                            )
+                            print(f"ERROR: {error_message}")
+                            raise ValueError(error_message)
                     
                     # First save the raw downloaded file
                     raw_bytes = b''
@@ -408,10 +457,21 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
             
             return result
             
+    except ValueError as ve: # Specific handling for ValueErrors (e.g., bad input, non-image file)
+        error_message = f"Task process_clip failed due to invalid input or data: {str(ve)}"
+        print(error_message)
+        print(traceback.format_exc())
+        # Update task state to FAILURE and do not retry for ValueErrors
+        self.update_state(state='FAILURE', meta={
+            'exc_type': type(ve).__name__,
+            'exc_message': str(ve),
+            'traceback': traceback.format_exc()
+        })
+        raise Ignore() # Tell Celery to ignore this task, no more retries
     except Exception as exc:
         # Log the error
-        print(f"Task process_clip failed: {str(exc)}")
+        print(f"Task process_clip failed with an unexpected exception: {str(exc)}")
         print(traceback.format_exc())
         
-        # Retry the task up to 3 times, with exponential backoff
+        # Retry the task up to 3 times, with exponential backoff for other exceptions
         self.retry(exc=exc, countdown=2 ** self.request.retries) 

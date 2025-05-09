@@ -1294,14 +1294,16 @@ class ChibiClipGenerator:
                                     
                                     # Try different ways of opening the image
                                     try:
+                                        # This uses the module-level 'Image'
                                         direct_img = Image.open(input_buffer)
                                     except Exception as e:
                                         if self.verbose:
                                             print(f"Error opening with PIL: {e}, trying with a different approach")
                                         # Try reading as raw bytes
-                                        from PIL import Image, ImageFile
+                                        from PIL import ImageFile # Only import ImageFile, rely on module-level 'Image'
                                         ImageFile.LOAD_TRUNCATED_IMAGES = True
                                         input_buffer.seek(0)
+                                        # This uses the module-level 'Image'
                                         direct_img = Image.open(input_buffer)
                                     
                                     # Convert to RGB for safety

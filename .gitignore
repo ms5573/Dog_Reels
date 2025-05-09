@@ -41,6 +41,7 @@ ENV/
 *.png
 *.gif
 *.mp3
+!birthday_song.mp3
 *.wav
 
 # OS generated files

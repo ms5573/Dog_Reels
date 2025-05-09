@@ -122,11 +122,28 @@ def process_clip(self, photo_url, audio_url=None, action="running", ratio="9:16"
                     # Check content type and headers
                     content_type = response.headers.get('Content-Type', '')
                     content_length = response.headers.get('Content-Length', 'unknown')
-                    print(f"S3 response headers: Content-Type={content_type}, Content-Length={content_length}")
+                    final_url_accessed = response.url # Get the final URL after any redirects
+                    print(f"S3 download: Status {response.status_code}, Content-Type='{content_type}', Content-Length='{content_length}', Final URL='{final_url_accessed}' for original URL='{photo_url}'")
                     
                     # Check if content type suggests this is actually an image
                     if not content_type.startswith('image/'):
-                        print(f"Warning: Content-Type '{content_type}' may not be an image")
+                        # Attempt to get a preview of the content if it's text-based
+                        preview_text = ""
+                        try:
+                            # response.text might consume the stream if not careful,
+                            # but for an error case, getting a preview is useful.
+                            # We're going to error out anyway.
+                            preview_text = response.text[:500] # Get up to 500 chars
+                        except Exception as e_text_preview:
+                            preview_text = f"(Could not get text preview: {e_text_preview})"
+                        
+                        error_message = (
+                            f"Invalid Content-Type received from photo_url. Expected 'image/...', but got '{content_type}'. "
+                            f"Original URL: {photo_url}, Final URL: {final_url_accessed}. "
+                            f"Response preview: {preview_text}..."
+                        )
+                        print(f"ERROR: {error_message}")
+                        raise ValueError(error_message)
                     
                     # First save the raw downloaded file
                     raw_bytes = b''

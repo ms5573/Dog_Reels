@@ -508,13 +508,6 @@ class ChibiClipGenerator:
                 print("No ImgBB API key provided and local fallback disabled.")
             raise ValueError("ImgBB API key not provided and local fallback disabled.")
         
-                print("No ImgBB API key provided. Using local storage.")
-            if use_local_fallback:
-                result = self.save_image_locally(image_base64)
-                return result["url"]
-            else:
-                raise ValueError("ImgBB API key not provided and local fallback disabled.")
-        
         if self.verbose:
             print("Uploading image to ImgBB...")
         url = "https://api.imgbb.com/1/upload"

@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import sys
 import logging
 import ssl
+import shutil
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -53,9 +54,45 @@ def generate_birthday_card(self, photo_path, birthday_message=None):
         # Dynamically import here to avoid circular imports
         from .chibi_clip import ChibiClipGenerator
         
-        # Create output directory if it doesn't exist
-        output_dir = os.path.join(os.getcwd(), "Output")
+        # Create various output directories to ensure they exist
+        app_root = os.getcwd()
+        logger.info(f"App root directory: {app_root}")
+        
+        output_dir = os.path.join(app_root, "Output")
         os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Created/verified Output directory: {output_dir}")
+        
+        tasks_dir = os.path.join(output_dir, "tasks")
+        os.makedirs(tasks_dir, exist_ok=True)
+        
+        # Verify the photo file exists
+        if not os.path.exists(photo_path):
+            logger.error(f"Photo file not found at {photo_path}")
+            
+            # Check if the path is relative to the app_root
+            if not photo_path.startswith('/'):
+                absolute_photo_path = os.path.join(app_root, photo_path)
+                logger.info(f"Trying absolute path: {absolute_photo_path}")
+                if os.path.exists(absolute_photo_path):
+                    photo_path = absolute_photo_path
+                    logger.info(f"Using absolute photo path: {photo_path}")
+            
+            if not os.path.exists(photo_path):
+                # File doesn't exist at expected location. Attempt to find the file by name
+                filename = os.path.basename(photo_path)
+                for root, dirs, files in os.walk(app_root):
+                    for file in files:
+                        if file == filename:
+                            found_path = os.path.join(root, file)
+                            logger.info(f"Found file at alternate location: {found_path}")
+                            photo_path = found_path
+                            break
+                    if os.path.exists(photo_path):
+                        break
+        
+        # If we still don't have the file, we can't proceed
+        if not os.path.exists(photo_path):
+            raise FileNotFoundError(f"Could not find the photo file: {photo_path}")
         
         # Initialize generator
         generator = ChibiClipGenerator(

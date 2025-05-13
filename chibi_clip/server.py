@@ -80,8 +80,9 @@ IMGBB_KEY = os.getenv("IMGBB_API_KEY")
 RUNWAY_KEY = os.getenv("RUNWAY_API_KEY")
 
 # Set up output directory for local storage
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTPUT_DIR = os.path.join(project_root, "Output")
+APP_ROOT = os.getcwd()
+print(f"App root directory: {APP_ROOT}")
+OUTPUT_DIR = os.path.join(APP_ROOT, "Output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"Output directory for local storage: {OUTPUT_DIR}")
 
@@ -112,6 +113,7 @@ def allowed_file(filename):
 # Create a directory for task storage
 TASKS_DIR = os.path.join(OUTPUT_DIR, "tasks")
 os.makedirs(TASKS_DIR, exist_ok=True)
+print(f"Task directory for status files: {TASKS_DIR}")
 
 # Helper function to save task status
 def save_task_status(task_id, status, stage="Queued", result_url=None, error=None):
@@ -175,13 +177,22 @@ def generate_route(): # Renamed from generate to avoid conflict with module
     permanent_path = os.path.join(OUTPUT_DIR, permanent_filename)
     
     try:
+        # Save uploaded file
         file.save(permanent_path)
         app.logger.info(f"Saved uploaded file to: {permanent_path}")
+        
+        # Verify file was saved correctly
+        if not os.path.exists(permanent_path):
+            app.logger.error(f"File was not saved properly at: {permanent_path}")
+            return jsonify({"error": "Failed to save uploaded file"}), 500
+        
+        app.logger.info(f"File exists at: {permanent_path}, size: {os.path.getsize(permanent_path)} bytes")
         
         # Create initial task status
         save_task_status(task_id, "PENDING", "Processing upload")
         
-        # Submit the task to Celery
+        # Submit the task to Celery with absolute path
+        app.logger.info(f"Submitting task with photo path: {permanent_path}")
         generate_birthday_card.delay(permanent_path, birthday_message)
         
         # Return task ID for status polling

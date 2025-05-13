@@ -284,7 +284,16 @@ def get_task_status(task_id):
 # Route to serve locally stored videos
 @app.route('/videos/<filename>')
 def serve_video(filename):
-    return send_from_directory(OUTPUT_DIR, filename)
+    response = send_from_directory(OUTPUT_DIR, filename)
+    
+    # Set content disposition header for download when requested
+    if request.args.get('download'):
+        response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    else:
+        # Default to inline to display in browser
+        response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+        
+    return response
 
 if __name__ == '__main__':
     # Make sure FLASK_ENV=development for debugger and reloader

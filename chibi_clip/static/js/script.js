@@ -86,10 +86,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 let resultHTML = '';
                 // Prioritize local_video_url (the extended one) if available
-                const displayVideoUrl = result.local_video_url || result.video_url; 
+                const displayVideoUrl = result.local_video_url || result.video_url || result.result_url;
+
+                // Check if this is a task that needs polling
+                if (result.task_id && result.status === "PENDING" && result.status_url) {
+                    // Start polling for task status
+                    pollTaskStatus(result.task_id);
+                    return;
+                }
 
                 if (displayVideoUrl) {
-                     resultHTML += `<h3>Video Ready!</h3><video controls src="${displayVideoUrl}"></video>`;
+                    resultHTML += `<h3>Video Ready!</h3>
+                                   <video controls src="${displayVideoUrl}"></video>
+                                   <div class="download-container">
+                                     <a href="${displayVideoUrl}?download=true" class="download-button">
+                                       <span class="button-icon">⬇️</span> Download Video
+                                     </a>
+                                   </div>`;
                 }
                 // Fallback for image if video URL isn't primary
                 else if (result.image_url) { 
@@ -118,5 +131,66 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error('Form submission error:', error);
             }
         });
+    }
+    
+    // Function to poll task status
+    async function pollTaskStatus(taskId) {
+        try {
+            const response = await fetch(`/task/${taskId}`);
+            if (!response.ok) {
+                throw new Error(`Error checking task status: ${response.status}`);
+            }
+            
+            const taskData = await response.json();
+            
+            if (taskData.status === "SUCCESS") {
+                // Task completed, show the result
+                let resultHTML = '';
+                const videoUrl = taskData.result_url;
+                
+                if (videoUrl) {
+                    resultHTML += `<h3>Video Ready!</h3>
+                                   <video controls src="${videoUrl}"></video>
+                                   <div class="download-container">
+                                     <a href="${videoUrl}?download=true" class="download-button">
+                                       <span class="button-icon">⬇️</span> Download Video
+                                     </a>
+                                   </div>`;
+                    
+                    resultHTML += `<p>You can share this link: <a href="${videoUrl}" target="_blank">${videoUrl}</a></p>`;
+                }
+                
+                loadingIndicator.style.display = 'none';
+                videoResultDiv.innerHTML = resultHTML;
+                
+            } else if (taskData.status === "FAILED") {
+                // Task failed
+                loadingIndicator.style.display = 'none';
+                errorResultDiv.textContent = `Processing failed: ${taskData.error || "Unknown error"}`;
+                errorResultDiv.style.display = 'block';
+                
+            } else {
+                // Task still in progress, update the loading message and poll again
+                const statusMessage = taskData.stage || "Processing...";
+                const loadingText = document.querySelector('#loadingIndicator p');
+                if (loadingText) {
+                    loadingText.textContent = statusMessage;
+                } else {
+                    // If the paragraph doesn't exist, create it
+                    const p = document.createElement('p');
+                    p.textContent = statusMessage;
+                    document.getElementById('loadingIndicator').prepend(p);
+                }
+                
+                // Continue polling after a delay
+                setTimeout(() => pollTaskStatus(taskId), 5000);
+            }
+            
+        } catch (error) {
+            loadingIndicator.style.display = 'none';
+            errorResultDiv.textContent = `An error occurred while checking status: ${error.message}`;
+            errorResultDiv.style.display = 'block';
+            console.error('Polling error:', error);
+        }
     }
 }); 

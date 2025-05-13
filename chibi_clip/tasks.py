@@ -4,6 +4,7 @@ import time
 from dotenv import load_dotenv
 import sys
 import logging
+import ssl
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -12,9 +13,26 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# Initialize Celery
+# Initialize Celery with proper SSL configuration for Heroku Redis
 redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-celery = Celery('tasks', broker=redis_url, backend=redis_url)
+broker_use_ssl = None
+redis_backend_use_ssl = None
+
+# Configure SSL if using rediss:// (Redis with SSL)
+if redis_url and redis_url.startswith('rediss://'):
+    broker_use_ssl = {
+        'ssl_cert_reqs': ssl.CERT_NONE
+    }
+    redis_backend_use_ssl = {
+        'ssl_cert_reqs': ssl.CERT_NONE
+    }
+    logger.info("Configured Redis with SSL settings")
+
+celery = Celery('tasks', 
+                broker=redis_url, 
+                backend=redis_url,
+                broker_use_ssl=broker_use_ssl,
+                redis_backend_use_ssl=redis_backend_use_ssl)
 
 # Configure Celery
 celery.conf.update(

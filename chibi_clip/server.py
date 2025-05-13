@@ -4,6 +4,7 @@ import uuid
 import tempfile # For secure temporary file creation
 import time
 import json
+import threading
 from werkzeug.utils import secure_filename # For secure filenames
 
 # Assuming chibi_clip.py is in the same directory or package
@@ -35,7 +36,7 @@ except (ImportError, ModuleNotFoundError) as e:
                 print(f"  {p}")
             raise
 
-# Import Celery tasks
+# Import Celery tasks (for reference, but we'll process in web dyno)
 try:
     from .tasks import generate_birthday_card
     print("Imported Celery tasks using relative import")
@@ -115,6 +116,9 @@ TASKS_DIR = os.path.join(OUTPUT_DIR, "tasks")
 os.makedirs(TASKS_DIR, exist_ok=True)
 print(f"Task directory for status files: {TASKS_DIR}")
 
+# Dictionary to store task data in memory while processing
+tasks = {}
+
 # Helper function to save task status
 def save_task_status(task_id, status, stage="Queued", result_url=None, error=None):
     task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
@@ -130,10 +134,50 @@ def save_task_status(task_id, status, stage="Queued", result_url=None, error=Non
     if error:
         data["error"] = error
     
-    with open(task_file, "w") as f:
-        json.dump(data, f)
+    # Store in memory
+    tasks[task_id] = data
+    
+    # Also write to file
+    try:
+        with open(task_file, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        app.logger.error(f"Error saving task status to file: {e}")
     
     return data
+
+# Function to process clip creation in a background thread but within the same dyno
+def process_clip_async(task_id, photo_path, birthday_message=None):
+    try:
+        app.logger.info(f"Starting background processing for task {task_id}")
+        
+        # Update task status
+        save_task_status(task_id, "PROCESSING", "Generating birthday card")
+        
+        # Process the clip
+        result = gen.process_clip(
+            photo_path=photo_path,
+            action="birthday-dance",
+            birthday_message=birthday_message,
+            use_local_storage=True,
+            extended_duration=45
+        )
+        
+        app.logger.info(f"Successfully processed clip for task {task_id}")
+        
+        # Get video URL
+        video_url = None
+        if "local_video_path" in result:
+            filename = os.path.basename(result["local_video_path"])
+            video_url = f"/videos/{filename}"
+            app.logger.info(f"Video available at: {video_url}")
+        
+        # Update task status with result
+        save_task_status(task_id, "SUCCESS", "Processing complete", result_url=video_url)
+        
+    except Exception as e:
+        app.logger.error(f"Error in background processing: {e}", exc_info=True)
+        save_task_status(task_id, "FAILED", "Processing failed", error=str(e))
 
 # Route to serve locally stored images
 @app.route('/images/<filename>')
@@ -189,11 +233,16 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         app.logger.info(f"File exists at: {permanent_path}, size: {os.path.getsize(permanent_path)} bytes")
         
         # Create initial task status
-        save_task_status(task_id, "PENDING", "Processing upload")
+        save_task_status(task_id, "PENDING", "Processing started")
         
-        # Submit the task to Celery with absolute path
-        app.logger.info(f"Submitting task with photo path: {permanent_path}")
-        generate_birthday_card.delay(permanent_path, birthday_message)
+        # Process in background thread but within same dyno
+        app.logger.info(f"Starting background thread for task {task_id}")
+        thread = threading.Thread(
+            target=process_clip_async,
+            args=(task_id, permanent_path, birthday_message)
+        )
+        thread.daemon = True
+        thread.start()
         
         # Return task ID for status polling
         return jsonify({
@@ -210,6 +259,11 @@ def generate_route(): # Renamed from generate to avoid conflict with module
 # Route to check task status
 @app.route('/task/<task_id>', methods=['GET'])
 def get_task_status(task_id):
+    # First check in-memory storage
+    if task_id in tasks:
+        return jsonify(tasks[task_id]), 200
+    
+    # Otherwise check file storage
     task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
     
     if not os.path.exists(task_file):
@@ -218,6 +272,9 @@ def get_task_status(task_id):
     try:
         with open(task_file, "r") as f:
             task_data = json.load(f)
+        
+        # Store in memory for future lookups
+        tasks[task_id] = task_data
         
         return jsonify(task_data), 200
     except Exception as e:

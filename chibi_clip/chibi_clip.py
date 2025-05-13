@@ -910,7 +910,7 @@ class ChibiClipGenerator:
                     txt_clip = TextClip(birthday_message, 
                                         fontsize=70, 
                                         color='white', 
-                                        font='Arial-Bold', 
+                                        font='DejaVu-Sans-Bold', 
                                         stroke_color='black', 
                                         stroke_width=2,
                                         method='caption',

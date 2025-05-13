@@ -43,6 +43,11 @@ ENV/
 *.mp3
 *.wav
 
+# Exceptions for required app assets
+!birthday_song.mp3
+!chibi_clip/assets/birthday_card_backdrop.png
+!chibi_clip/assets/birthday_card_backdrop_v2.png
+
 # OS generated files
 .DS_Store
 .DS_Store?

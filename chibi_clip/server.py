@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify, abort, send_from_directory, render_te
 import os
 import uuid
 import tempfile # For secure temporary file creation
+import time
+import json
 from werkzeug.utils import secure_filename # For secure filenames
 
 # Assuming chibi_clip.py is in the same directory or package
@@ -32,6 +34,18 @@ except (ImportError, ModuleNotFoundError) as e:
             for p in sys.path:
                 print(f"  {p}")
             raise
+
+# Import Celery tasks
+try:
+    from .tasks import generate_birthday_card
+    print("Imported Celery tasks using relative import")
+except (ImportError, ModuleNotFoundError):
+    try:
+        from chibi_clip.tasks import generate_birthday_card
+        print("Imported Celery tasks using direct import")
+    except Exception as e:
+        print(f"Could not import Celery tasks: {e}")
+        raise
 
 app = Flask(__name__)
 
@@ -95,6 +109,30 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# Create a directory for task storage
+TASKS_DIR = os.path.join(OUTPUT_DIR, "tasks")
+os.makedirs(TASKS_DIR, exist_ok=True)
+
+# Helper function to save task status
+def save_task_status(task_id, status, stage="Queued", result_url=None, error=None):
+    task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
+    data = {
+        "id": task_id,
+        "status": status,
+        "stage": stage,
+        "created": time.time(),
+        "updated": time.time()
+    }
+    if result_url:
+        data["result_url"] = result_url
+    if error:
+        data["error"] = error
+    
+    with open(task_file, "w") as f:
+        json.dump(data, f)
+    
+    return data
+
 # Route to serve locally stored images
 @app.route('/images/<filename>')
 def serve_image(filename):
@@ -119,124 +157,61 @@ def generate_route(): # Renamed from generate to avoid conflict with module
     if not file or not allowed_file(file.filename):
         return jsonify({"error": "Invalid file type. Allowed: png, jpg, jpeg, gif"}), 400
 
+    # Generate a task ID
+    task_id = str(uuid.uuid4())
+    
+    # Get parameters
     action = request.form.get("action", "birthday-dance")
-    ratio = request.form.get("ratio", "9:16")
-    birthday_message = request.form.get("birthdayMessage", None) # Get the birthday message
-    try:
-        duration = int(request.form.get("duration", 5))
-    except ValueError:
-        return jsonify({"error": "Duration must be an integer"}), 400
-    
-    # Get extended duration parameter
-    try:
-        extended_duration = int(request.form.get("extended_duration", 45))
-    except ValueError:
-        return jsonify({"error": "Extended duration must be an integer"}), 400
-    
-    # New parameter to use local storage instead of ImgBB
-    use_local_storage = request.form.get("use_local_storage", "false").lower() == "true"
+    birthday_message = request.form.get("birthdayMessage", None)
     
     # Handle birthday theme automation
-    # If action is birthday-dance, force local storage and use default birthday song
     if action == "birthday-dance":
-        use_local_storage = True
         app.logger.info("Birthday theme selected - will use local storage and birthday song")
     
-    # Handle audio parameter
-    use_default_audio = request.form.get("use_default_audio", "false").lower() == "true"
-    audio_path = None
+    # Securely save the uploaded file to a permanent path
+    filename = secure_filename(file.filename)
+    base, ext = os.path.splitext(filename)
+    permanent_filename = f"{base}_{task_id}{ext}"
+    permanent_path = os.path.join(OUTPUT_DIR, permanent_filename)
     
-    # For birthday theme or when default audio is requested, use birthday_song.mp3
-    if action == "birthday-dance" or use_default_audio:
-        # Path to the default birthday_song.mp3 in project root
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        audio_path = os.path.join(project_root, "birthday_song.mp3")
-        if not os.path.exists(audio_path):
-            return jsonify({"error": "Default audio file not found on server"}), 500
-    
-    # Check if audio file was uploaded
-    custom_audio = None
-    if 'audio' in request.files:
-        custom_audio = request.files['audio']
-        if custom_audio.filename != '':
-            # Process the uploaded audio file
-            if custom_audio.filename.lower().endswith(('.mp3', '.wav', '.ogg')):
-                # We'll handle saving this audio file later
-                pass
-            else:
-                return jsonify({"error": "Invalid audio file type. Allowed: mp3, wav, ogg"}), 400
-    
-    # Securely save the uploaded file to a temporary path
-    # Using tempfile module for better security and automatic cleanup
-    filename = secure_filename(file.filename) # Sanitize filename
-    # Create a temporary directory that will be cleaned up
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = os.path.join(tmp_dir, filename)
-        file.save(tmp_path)
+    try:
+        file.save(permanent_path)
+        app.logger.info(f"Saved uploaded file to: {permanent_path}")
         
-        # If a custom audio file was uploaded, save it temporarily
-        if custom_audio and custom_audio.filename != '':
-            audio_filename = secure_filename(custom_audio.filename)
-            audio_path = os.path.join(tmp_dir, audio_filename)
-            custom_audio.save(audio_path)
+        # Create initial task status
+        save_task_status(task_id, "PENDING", "Processing upload")
         
-        if SERVER_VERBOSE:
-            print(f"Temporary file saved to: {tmp_path}")
-            if audio_path:
-                print(f"Audio file path: {audio_path}")
-            print(f"Using local storage: {use_local_storage}")
-            if action == "birthday-dance":
-                print("Birthday theme selected - will use local storage and add birthday music")
+        # Submit the task to Celery
+        generate_birthday_card.delay(permanent_path, birthday_message)
+        
+        # Return task ID for status polling
+        return jsonify({
+            "task_id": task_id,
+            "status": "PENDING",
+            "message": "Your request is being processed",
+            "status_url": f"/task/{task_id}"
+        }), 202
+        
+    except Exception as e:
+        app.logger.error(f"Error during request processing: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to process your request: {str(e)}"}), 500
 
-        try:
-            # Process the request
-            app.logger.info(f"Processing request: action={action}, ratio={ratio}, duration={duration}, extended_duration={extended_duration}, temp_file={tmp_path}, audio_path={audio_path}, use_local_storage={use_local_storage}")
-            
-            result = gen.process_clip(
-                photo_path=tmp_path, 
-                action=action, 
-                ratio=ratio, 
-                duration=duration,
-                audio_path=audio_path,
-                extended_duration=extended_duration,
-                use_local_storage=use_local_storage,
-                birthday_message=birthday_message # Pass the message
-            )
-            app.logger.info(f"Processing successful: {result}")
-            
-            # If using local storage, modify the URL to use our server endpoint
-            if "local_image_path" in result and result.get("image_url", "").startswith("file://"):
-                # Extract filename from the path
-                filename = os.path.basename(result["local_image_path"])
-                # Replace file:// URL with our server endpoint
-                server_url = request.url_root.rstrip('/') + f"/images/{filename}"
-                result["image_url"] = server_url
-                
-                app.logger.info(f"Replaced local file URL with server URL: {server_url}")
-            
-            # Add local video endpoint if available
-            if "local_video_path" in result:
-                filename = os.path.basename(result["local_video_path"])
-                # Only replace if it starts with file:// (unlikely but possible)
-                if result.get("video_url", "").startswith("file://"):
-                    server_url = request.url_root.rstrip('/') + f"/videos/{filename}"
-                    result["video_url"] = server_url
-                # Add a local video URL
-                server_url = request.url_root.rstrip('/') + f"/videos/{filename}"
-                result["local_video_url"] = server_url
-                
-                app.logger.info(f"Added server URL for video: {server_url}")
-            
-            return jsonify(result), 200
-        except FileNotFoundError:
-            app.logger.error(f"File not found during processing: {tmp_path}")
-            return jsonify({"error": "File disappeared during processing. Please try again."}), 500
-        except (ValueError, RuntimeError, TimeoutError) as e:
-            app.logger.error(f"Error during clip generation: {e}")
-            return jsonify({"error": str(e)}), 500
-        except Exception as e:
-            app.logger.error(f"Unexpected server error: {e}", exc_info=True)
-            return jsonify({"error": "An unexpected server error occurred."}), 500
+# Route to check task status
+@app.route('/task/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
+    
+    if not os.path.exists(task_file):
+        return jsonify({"error": "Task not found"}), 404
+    
+    try:
+        with open(task_file, "r") as f:
+            task_data = json.load(f)
+        
+        return jsonify(task_data), 200
+    except Exception as e:
+        app.logger.error(f"Error retrieving task status: {e}")
+        return jsonify({"error": "Failed to retrieve task status"}), 500
 
 # Route to serve locally stored videos
 @app.route('/videos/<filename>')

@@ -12,6 +12,7 @@ export default function Home() {
   const [currentStep, setCurrentStep] = useState<"upload" | "processing" | "complete" | "failed">("upload")
   const [taskId, setTaskId] = useState<string | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
+  const [cloudfrontUrl, setCloudfrontUrl] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [processingStage, setProcessingStage] = useState<string>("Uploading...")
   const [retryCount, setRetryCount] = useState(0)
@@ -37,6 +38,7 @@ export default function Home() {
       setRetryCount(0)
       setPollingActive(false)
       setVideoVerified(false)
+      setCloudfrontUrl(null)
 
       // Submit the form data to the API
       const response = await fetch("/api/upload", {
@@ -86,6 +88,12 @@ export default function Home() {
           break;
           
         case "COMPLETE":
+          // Check for CloudFront URL if available
+          if (data.cloudfront_url) {
+            setCloudfrontUrl(data.cloudfront_url);
+            console.log("CloudFront URL found:", data.cloudfront_url);
+          }
+          
           if (data.result_url) {
             // Verify video is actually available by making a HEAD request
             try {
@@ -187,7 +195,9 @@ export default function Home() {
             </>
           )}
 
-          {currentStep === "complete" && resultUrl && videoVerified && <ResultDisplay resultUrl={resultUrl} />}
+          {currentStep === "complete" && resultUrl && videoVerified && 
+            <ResultDisplay resultUrl={resultUrl} cloudfrontUrl={cloudfrontUrl} />
+          }
 
           {currentStep === "failed" && (
             <div className="text-center p-6">
@@ -199,6 +209,7 @@ export default function Home() {
                   setCurrentStep("upload");
                   setTaskId(null);
                   setResultUrl(null);
+                  setCloudfrontUrl(null);
                   setErrorMessage(null);
                   setVideoVerified(false);
                 }} 

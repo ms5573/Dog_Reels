@@ -1,29 +1,46 @@
 "use client"
 
-import { Download, Eye, Share2 } from "lucide-react"
+import { Download, Eye, Share2, CloudLightning, Server } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import confetti from "canvas-confetti"
 import { useEffect, useRef, useState } from "react"
 
 interface ResultDisplayProps {
   resultUrl: string
+  cloudfrontUrl?: string | null
 }
 
-export default function ResultDisplay({ resultUrl }: ResultDisplayProps) {
+export default function ResultDisplay({ resultUrl, cloudfrontUrl }: ResultDisplayProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [useCloudfront, setUseCloudfront] = useState(false);
+  const [videoError, setVideoError] = useState(false);
+  
+  // Determine the active video URL
+  const activeVideoUrl = useCloudfront && cloudfrontUrl ? cloudfrontUrl : resultUrl;
   
   useEffect(() => {
+    // Reset loading and error state when video URL changes
+    setIsLoading(true);
+    setVideoError(false);
+    
     // Start loading the video
     if (videoRef.current) {
       videoRef.current.addEventListener('loadeddata', () => {
         setIsLoading(false);
+        setVideoError(false);
       });
       
       // If video fails to load, handle the error
       videoRef.current.addEventListener('error', () => {
         console.error('Error loading video');
         setIsLoading(false);
+        setVideoError(true);
+        
+        // If CloudFront URL fails, switch back to local URL
+        if (useCloudfront && cloudfrontUrl) {
+          setUseCloudfront(false);
+        }
       });
     }
     
@@ -59,12 +76,15 @@ export default function ResultDisplay({ resultUrl }: ResultDisplayProps) {
     }, 250)
 
     return () => clearInterval(interval)
-  }, [])
+  }, [useCloudfront, cloudfrontUrl, resultUrl])
 
   // Function to copy the video link to clipboard
   const copyLinkToClipboard = () => {
-    // Create the full URL by combining window location origin with the API path
-    const fullUrl = `${window.location.origin}${resultUrl}`;
+    // If it's a local URL, add the origin
+    const fullUrl = activeVideoUrl.startsWith('http') 
+      ? activeVideoUrl 
+      : `${window.location.origin}${activeVideoUrl}`;
+      
     navigator.clipboard.writeText(fullUrl)
       .then(() => {
         alert('Link copied to clipboard!');
@@ -78,11 +98,16 @@ export default function ResultDisplay({ resultUrl }: ResultDisplayProps) {
   const downloadVideo = () => {
     // Create an anchor element and simulate a click
     const a = document.createElement('a');
-    a.href = resultUrl;
+    a.href = activeVideoUrl;
     a.download = 'dog-birthday-card.mp4';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  // Function to switch between local and CloudFront URLs
+  const toggleVideoSource = () => {
+    setUseCloudfront(!useCloudfront);
   };
 
   return (
@@ -100,6 +125,28 @@ export default function ResultDisplay({ resultUrl }: ResultDisplayProps) {
         Your personalized dog birthday card has been created successfully. You can view it, download it, or share it with friends and family.
       </p>
 
+      {/* Video Source Toggle - only show if CloudFront URL is available */}
+      {cloudfrontUrl && (
+        <div className="flex justify-center mb-4">
+          <div className="bg-purple-100 rounded-full flex items-center p-1">
+            <button
+              onClick={toggleVideoSource}
+              className={`px-4 py-2 rounded-full flex items-center gap-2 text-sm transition-colors ${!useCloudfront ? 'bg-purple-600 text-white' : 'text-purple-700'}`}
+            >
+              <Server className="h-4 w-4" />
+              Local
+            </button>
+            <button
+              onClick={toggleVideoSource}
+              className={`px-4 py-2 rounded-full flex items-center gap-2 text-sm transition-colors ${useCloudfront ? 'bg-purple-600 text-white' : 'text-purple-700'}`}
+            >
+              <CloudLightning className="h-4 w-4" />
+              CloudFront
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Video Player */}
       <div className="w-full max-w-md mb-6 rounded-lg overflow-hidden bg-black shadow-lg">
         {isLoading && (
@@ -107,13 +154,20 @@ export default function ResultDisplay({ resultUrl }: ResultDisplayProps) {
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500"></div>
           </div>
         )}
+        {videoError && (
+          <div className="w-full aspect-video flex items-center justify-center bg-gray-900 text-red-400">
+            <div className="text-center p-4">
+              <p>Error loading video. Please try the local version.</p>
+            </div>
+          </div>
+        )}
         <video 
           ref={videoRef}
           controls
           autoPlay
           loop
-          className={`w-full ${isLoading ? 'hidden' : 'block'}`}
-          src={resultUrl}
+          className={`w-full ${isLoading || videoError ? 'hidden' : 'block'}`}
+          src={activeVideoUrl}
           poster="/video-poster.jpg"
         >
           Your browser does not support the video tag.
@@ -122,7 +176,7 @@ export default function ResultDisplay({ resultUrl }: ResultDisplayProps) {
 
       <div className="flex flex-col sm:flex-row gap-4">
         <Button
-          onClick={() => window.open(resultUrl, "_blank")}
+          onClick={() => window.open(activeVideoUrl, "_blank")}
           className="bg-purple-600 hover:bg-purple-700 flex items-center gap-2"
           size="lg"
         >

@@ -61,6 +61,10 @@ export async function POST(request: NextRequest) {
       created: new Date().toISOString()
     });
 
+    // Create a log file for this task
+    const logFile = path.join(outputDir, `${taskId}_processing.log`);
+    fs.writeFileSync(logFile, `Processing started: ${new Date().toISOString()}\n`);
+
     // Run the Python Chibi-Clip process asynchronously
     // Use the birthday-dance action to create a birthday themed animation
     try {
@@ -80,7 +84,7 @@ export async function POST(request: NextRequest) {
         // Check if we can determine the current stage from any output log files
         // For now, just update the status to show it's still processing
         updateTaskStatus(statusFile, 'PROCESSING', 'Creating your birthday card animation...');
-      }, 10000); // Check every 10 seconds
+      }, 10000);
       
       process
         .then(({ stdout, stderr }) => {
@@ -90,6 +94,21 @@ export async function POST(request: NextRequest) {
           console.log('Chibi-Clip process completed');
           console.log('Output:', stdout);
           
+          // Save the output to the log file
+          fs.appendFileSync(logFile, `\n--- STDOUT ---\n${stdout}\n`);
+          if (stderr) {
+            fs.appendFileSync(logFile, `\n--- STDERR ---\n${stderr}\n`);
+          }
+          
+          // Look for CloudFront URL in the output
+          const cloudfrontMatch = stdout.match(/https:\/\/dnznrvs05pmza\.cloudfront\.net\/[a-zA-Z0-9-]+\.mp4\?_jwt=[a-zA-Z0-9_.-]+/);
+          let cloudfrontUrl = null;
+          
+          if (cloudfrontMatch) {
+            cloudfrontUrl = cloudfrontMatch[0];
+            console.log(`Found CloudFront URL: ${cloudfrontUrl}`);
+          }
+          
           const extendedVideoMatch = stdout.match(/Extended video with music .+? saved to: (.+\.mp4)/);
           const videoPathMatch = stdout.match(/"local_video_path": "(.+\.mp4)"/);
           
@@ -97,10 +116,11 @@ export async function POST(request: NextRequest) {
                             videoPathMatch ? videoPathMatch[1] : null;
           
           if (videoPath && fs.existsSync(videoPath)) {
-            // Update status to COMPLETE with the result URL
+            // Update status to COMPLETE with the result URL and CloudFront URL if available
             updateTaskStatus(statusFile, 'COMPLETE', 'Your birthday card is ready!', {
               result_url: `/api/result/${taskId}`,
               videoPath: videoPath,
+              cloudfront_url: cloudfrontUrl,
               completed: new Date().toISOString()
             });
           } else {
@@ -116,6 +136,8 @@ export async function POST(request: NextRequest) {
           clearInterval(checkInterval);
           
           console.error('Error during Chibi-Clip processing:', error);
+          fs.appendFileSync(logFile, `\n--- ERROR ---\n${error.message}\n${error.stack || ''}\n`);
+          
           updateTaskStatus(statusFile, 'FAILED', 'Processing failed', {
             error: error.message,
             completed: new Date().toISOString()
@@ -129,7 +151,7 @@ export async function POST(request: NextRequest) {
         message: 'Upload successful, processing started'
       });
     } catch (error) {
-      console.error('Error starting Python process:', error);
+      console.error('Execution error:', error);
       return NextResponse.json(
         { error: 'Failed to start processing' },
         { status: 500 }
@@ -138,7 +160,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Upload error:', error);
     return NextResponse.json(
-      { error: 'Failed to process upload' },
+      { error: 'Upload failed' },
       { status: 500 }
     );
   }

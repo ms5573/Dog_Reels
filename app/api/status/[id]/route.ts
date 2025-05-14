@@ -40,6 +40,29 @@ export async function GET(
       if (status.videoPath && fs.existsSync(status.videoPath)) {
         // Video exists, we can confirm it's complete
         console.log(`Confirmed video file exists: ${status.videoPath}`);
+        
+        // If we don't have a CloudFront URL yet, check if we can find it in the log file
+        if (!status.cloudfront_url) {
+          // Look for log file with the task ID
+          const logFile = path.join(outputDir, `${taskId}_processing.log`);
+          
+          if (fs.existsSync(logFile)) {
+            try {
+              const logContent = fs.readFileSync(logFile, 'utf8');
+              // Look for CloudFront URL in log output
+              const cloudfrontMatch = logContent.match(/https:\/\/dnznrvs05pmza\.cloudfront\.net\/[a-zA-Z0-9-]+\.mp4\?_jwt=[a-zA-Z0-9_.-]+/);
+              
+              if (cloudfrontMatch) {
+                status.cloudfront_url = cloudfrontMatch[0];
+                // Save the updated status with the CloudFront URL
+                fs.writeFileSync(statusFile, JSON.stringify(status));
+                console.log(`Updated status with CloudFront URL: ${status.cloudfront_url}`);
+              }
+            } catch (e) {
+              console.error('Error reading log file:', e);
+            }
+          }
+        }
       } else {
         // Video doesn't exist yet, override status to PROCESSING
         console.log(`Status claims COMPLETE but video file not found. Setting to PROCESSING.`);

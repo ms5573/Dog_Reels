@@ -16,6 +16,7 @@ export default function Home() {
   const [processingStage, setProcessingStage] = useState<string>("Uploading...")
   const [retryCount, setRetryCount] = useState(0)
   const [pollingActive, setPollingActive] = useState(false)
+  const [videoVerified, setVideoVerified] = useState(false)
 
   // Effect to manage polling when taskId changes
   useEffect(() => {
@@ -35,6 +36,7 @@ export default function Home() {
       setProcessingStage("Uploading...")
       setRetryCount(0)
       setPollingActive(false)
+      setVideoVerified(false)
 
       // Submit the form data to the API
       const response = await fetch("/api/upload", {
@@ -80,14 +82,31 @@ export default function Home() {
           setProcessingStage(data.stage || "Creating your birthday card...")
           // Reset retry count since we got a valid processing status
           setRetryCount(0) 
-          scheduleNextPoll(id);
+          scheduleNextPoll(id, 2000); // Poll faster during processing
           break;
           
         case "COMPLETE":
           if (data.result_url) {
-            setResultUrl(data.result_url)
-            setCurrentStep("complete")
-            setPollingActive(false)
+            // Verify video is actually available by making a HEAD request
+            try {
+              const videoCheck = await fetch(data.result_url, { method: 'HEAD' });
+              if (videoCheck.ok) {
+                // Video exists and is ready
+                setVideoVerified(true);
+                setResultUrl(data.result_url);
+                setCurrentStep("complete");
+                setPollingActive(false);
+              } else {
+                // Video not ready yet, continue polling
+                console.log("Video URL returned 404, continuing to poll");
+                setProcessingStage("Finalizing your video...");
+                scheduleNextPoll(id, 1500); // Poll faster when we're close
+              }
+            } catch (e) {
+              // Network error checking video - continue polling
+              console.log("Error checking video availability:", e);
+              scheduleNextPoll(id);
+            }
           } else {
             console.error("Complete status but no result URL")
             scheduleNextPoll(id)
@@ -112,20 +131,20 @@ export default function Home() {
       setRetryCount(newRetryCount);
       
       // If we've retried too many times, show error
-      if (newRetryCount > 5) {
+      if (newRetryCount > 10) { // Increased max retries
         setCurrentStep("failed")
         setErrorMessage("Failed to check status. Please try again.")
         setPollingActive(false)
       } else {
         // Otherwise retry after a longer delay
-        setTimeout(() => pollStatus(id), 5000 * newRetryCount)
+        setTimeout(() => pollStatus(id), 2000 + (1000 * newRetryCount))
       }
     }
   }
   
-  const scheduleNextPoll = (id: string) => {
+  const scheduleNextPoll = (id: string, delay = 3000) => {
     if (pollingActive) {
-      setTimeout(() => pollStatus(id), 3000)
+      setTimeout(() => pollStatus(id), delay)
     }
   }
 
@@ -168,7 +187,7 @@ export default function Home() {
             </>
           )}
 
-          {currentStep === "complete" && resultUrl && <ResultDisplay resultUrl={resultUrl} />}
+          {currentStep === "complete" && resultUrl && videoVerified && <ResultDisplay resultUrl={resultUrl} />}
 
           {currentStep === "failed" && (
             <div className="text-center p-6">
@@ -181,6 +200,7 @@ export default function Home() {
                   setTaskId(null);
                   setResultUrl(null);
                   setErrorMessage(null);
+                  setVideoVerified(false);
                 }} 
                 className="bg-purple-600 hover:bg-purple-700"
               >

@@ -34,6 +34,23 @@ export async function GET(
     const statusData = fs.readFileSync(statusFile, 'utf8');
     const status = JSON.parse(statusData);
     
+    // Extra verification for COMPLETE status
+    if (status.status === 'COMPLETE') {
+      // Verify that the video file actually exists
+      if (status.videoPath && fs.existsSync(status.videoPath)) {
+        // Video exists, we can confirm it's complete
+        console.log(`Confirmed video file exists: ${status.videoPath}`);
+      } else {
+        // Video doesn't exist yet, override status to PROCESSING
+        console.log(`Status claims COMPLETE but video file not found. Setting to PROCESSING.`);
+        status.status = 'PROCESSING';
+        status.stage = 'Finalizing your video...';
+        
+        // Optional: Write back the corrected status
+        fs.writeFileSync(statusFile, JSON.stringify(status));
+      }
+    }
+    
     return NextResponse.json(status);
   } catch (error) {
     console.error('Status check error:', error);

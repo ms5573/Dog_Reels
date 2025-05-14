@@ -7,6 +7,19 @@ import util from 'util';
 
 const execPromise = util.promisify(exec);
 
+// Helper function to update status file
+function updateTaskStatus(statusFile, status, stage, extraData = {}) {
+  const data = {
+    status: status,
+    stage: stage,
+    updated: new Date().toISOString(),
+    ...extraData
+  };
+  
+  fs.writeFileSync(statusFile, JSON.stringify(data));
+  console.log(`Updated task status: ${status} - ${stage}`);
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Create Output directory if it doesn't exist
@@ -44,22 +57,36 @@ export async function POST(request: NextRequest) {
 
     // Create a task status file to track progress
     const statusFile = path.join(outputDir, `${taskId}_status.json`);
-    fs.writeFileSync(statusFile, JSON.stringify({
-      status: 'PENDING',
-      stage: 'Uploading...',
+    updateTaskStatus(statusFile, 'PENDING', 'Uploading...', {
       created: new Date().toISOString()
-    }));
+    });
 
     // Run the Python Chibi-Clip process asynchronously
     // Use the birthday-dance action to create a birthday themed animation
     try {
+      // Update status to PROCESSING before starting the command
+      updateTaskStatus(statusFile, 'PROCESSING', 'Starting image processing...');
+      
       // Use conda run with the proper environment that has requests installed
       const command = `conda run -n chibi_env python chibi_clip/chibi_clip.py "${imagePath}" --action "birthday-dance" --extended-duration 45 --verbose`;
       
       console.log(`Executing command: ${command}`);
       
-      execPromise(command)
+      // Start the async process
+      const process = execPromise(command);
+      
+      // Set up a periodic check for process output
+      const checkInterval = setInterval(async () => {
+        // Check if we can determine the current stage from any output log files
+        // For now, just update the status to show it's still processing
+        updateTaskStatus(statusFile, 'PROCESSING', 'Creating your birthday card animation...');
+      }, 10000); // Check every 10 seconds
+      
+      process
         .then(({ stdout, stderr }) => {
+          // Clear the interval when the process completes
+          clearInterval(checkInterval);
+          
           console.log('Chibi-Clip process completed');
           console.log('Output:', stdout);
           
@@ -70,31 +97,29 @@ export async function POST(request: NextRequest) {
                             videoPathMatch ? videoPathMatch[1] : null;
           
           if (videoPath && fs.existsSync(videoPath)) {
-            fs.writeFileSync(statusFile, JSON.stringify({
-              status: 'COMPLETE',
-              stage: 'Complete',
+            // Update status to COMPLETE with the result URL
+            updateTaskStatus(statusFile, 'COMPLETE', 'Your birthday card is ready!', {
               result_url: `/api/result/${taskId}`,
               videoPath: videoPath,
               completed: new Date().toISOString()
-            }));
+            });
           } else {
             // Update the status file with error information
-            fs.writeFileSync(statusFile, JSON.stringify({
-              status: 'FAILED',
-              stage: 'Video generation failed',
+            updateTaskStatus(statusFile, 'FAILED', 'Video generation failed', {
               error: 'Could not find generated video',
               completed: new Date().toISOString()
-            }));
+            });
           }
         })
         .catch((error) => {
+          // Clear the interval when the process fails
+          clearInterval(checkInterval);
+          
           console.error('Error during Chibi-Clip processing:', error);
-          fs.writeFileSync(statusFile, JSON.stringify({
-            status: 'FAILED',
-            stage: 'Processing failed',
+          updateTaskStatus(statusFile, 'FAILED', 'Processing failed', {
             error: error.message,
             completed: new Date().toISOString()
-          }));
+          });
         });
 
       // Don't wait for the process to complete - return immediately

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Upload, MessageSquare, Gift, Sparkles, Cake, Music } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -14,11 +14,27 @@ export default function Home() {
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [processingStage, setProcessingStage] = useState<string>("Uploading...")
+  const [retryCount, setRetryCount] = useState(0)
+  const [pollingActive, setPollingActive] = useState(false)
+
+  // Effect to manage polling when taskId changes
+  useEffect(() => {
+    if (taskId && currentStep === "processing" && !pollingActive) {
+      setPollingActive(true);
+      pollStatus(taskId);
+    }
+    
+    return () => {
+      setPollingActive(false);
+    };
+  }, [taskId, currentStep]);
 
   const handleSubmit = async (formData: FormData) => {
     try {
       setCurrentStep("processing")
       setProcessingStage("Uploading...")
+      setRetryCount(0)
+      setPollingActive(false)
 
       // Submit the form data to the API
       const response = await fetch("/api/upload", {
@@ -32,9 +48,8 @@ export default function Home() {
 
       const data = await response.json()
       setTaskId(data.task_id)
-
-      // Start polling for status
-      pollStatus(data.task_id)
+      
+      // Polling will be started by the useEffect
     } catch (error) {
       console.error("Error submitting form:", error)
       setCurrentStep("failed")
@@ -43,6 +58,8 @@ export default function Home() {
   }
 
   const pollStatus = async (id: string) => {
+    if (!pollingActive) return;
+    
     try {
       const response = await fetch(`/api/status/${id}`)
 
@@ -51,32 +68,64 @@ export default function Home() {
       }
 
       const data = await response.json()
+      console.log("Status update:", data)
 
       switch (data.status) {
         case "PENDING":
-          setProcessingStage("Processing your request...")
-          break
+          setProcessingStage(data.stage || "Processing your request...")
+          scheduleNextPoll(id);
+          break;
+          
         case "PROCESSING":
           setProcessingStage(data.stage || "Creating your birthday card...")
-          break
+          // Reset retry count since we got a valid processing status
+          setRetryCount(0) 
+          scheduleNextPoll(id);
+          break;
+          
         case "COMPLETE":
-          setCurrentStep("complete")
-          setResultUrl(data.result_url)
-          return // Stop polling
+          if (data.result_url) {
+            setResultUrl(data.result_url)
+            setCurrentStep("complete")
+            setPollingActive(false)
+          } else {
+            console.error("Complete status but no result URL")
+            scheduleNextPoll(id)
+          }
+          break;
+          
         case "FAILED":
           setCurrentStep("failed")
           setErrorMessage(data.error || "Something went wrong. Please try again.")
-          return // Stop polling
+          setPollingActive(false)
+          break;
+          
         default:
           setProcessingStage("Processing your request...")
+          scheduleNextPoll(id)
       }
-
-      // Continue polling after a delay
-      setTimeout(() => pollStatus(id), 5000)
     } catch (error) {
       console.error("Error polling status:", error)
-      setCurrentStep("failed")
-      setErrorMessage("Failed to check status. Please try again.")
+      
+      // Increment retry count
+      const newRetryCount = retryCount + 1;
+      setRetryCount(newRetryCount);
+      
+      // If we've retried too many times, show error
+      if (newRetryCount > 5) {
+        setCurrentStep("failed")
+        setErrorMessage("Failed to check status. Please try again.")
+        setPollingActive(false)
+      } else {
+        // Otherwise retry after a longer delay
+        setTimeout(() => pollStatus(id), 5000 * newRetryCount)
+      }
+    }
+  }
+  
+  const scheduleNextPoll = (id: string) => {
+    if (pollingActive) {
+      setTimeout(() => pollStatus(id), 3000)
     }
   }
 
@@ -108,7 +157,16 @@ export default function Home() {
         <Card className="w-full max-w-2xl p-6 shadow-xl bg-white rounded-lg border border-purple-100">
           {currentStep === "upload" && <UploadForm onSubmit={handleSubmit} />}
 
-          {currentStep === "processing" && <ProcessingStatus stage={processingStage} />}
+          {currentStep === "processing" && (
+            <>
+              <ProcessingStatus stage={processingStage} />
+              {retryCount > 0 && (
+                <p className="text-amber-600 text-center mt-4">
+                  Still working on your birthday card... Thank you for your patience!
+                </p>
+              )}
+            </>
+          )}
 
           {currentStep === "complete" && resultUrl && <ResultDisplay resultUrl={resultUrl} />}
 
@@ -117,7 +175,15 @@ export default function Home() {
               <div className="text-red-500 text-xl mb-4">
                 {errorMessage || "Sorry, something went wrong. Please try again."}
               </div>
-              <Button onClick={() => setCurrentStep("upload")} className="bg-purple-600 hover:bg-purple-700">
+              <Button 
+                onClick={() => {
+                  setCurrentStep("upload");
+                  setTaskId(null);
+                  setResultUrl(null);
+                  setErrorMessage(null);
+                }} 
+                className="bg-purple-600 hover:bg-purple-700"
+              >
                 Try Again
               </Button>
             </div>
@@ -159,14 +225,17 @@ export default function Home() {
           </div>
         </div>
         
-        <div className="mt-12 mb-6 p-6 bg-white rounded-lg shadow-md max-w-4xl border border-purple-100">
-          <h2 className="text-xl font-bold text-purple-700 mb-3">Preview Example</h2>
-          <div className="aspect-video bg-gray-100 rounded-lg flex items-center justify-center">
-            <div className="text-center p-4">
-              <p className="text-gray-500">Preview of your dog's dancing animation will appear here</p>
+        {/* Hide the preview section when showing a real result */}
+        {currentStep !== "complete" && (
+          <div className="mt-12 mb-6 p-6 bg-white rounded-lg shadow-md max-w-4xl border border-purple-100">
+            <h2 className="text-xl font-bold text-purple-700 mb-3">Preview Example</h2>
+            <div className="aspect-video bg-gray-100 rounded-lg flex items-center justify-center">
+              <div className="text-center p-4">
+                <p className="text-gray-500">Preview of your dog's dancing animation will appear here</p>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </main>
   )

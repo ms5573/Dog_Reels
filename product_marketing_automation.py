@@ -4,9 +4,6 @@ import json
 import time
 import base64
 from io import BytesIO
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import argparse
 import cloudinary
 import cloudinary.uploader
@@ -14,7 +11,7 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
 class ProductMarketingAutomation:
-    def __init__(self, openai_api_key=None, google_credentials_path=None, imgbb_api_key=None, runway_api_key=None, cloudinary_cloud_name=None, cloudinary_api_key=None, cloudinary_api_secret=None, sendgrid_api_key=None):
+    def __init__(self, openai_api_key=None, imgbb_api_key=None, runway_api_key=None, cloudinary_cloud_name=None, cloudinary_api_key=None, cloudinary_api_secret=None, sendgrid_api_key=None):
         """
         Initialize with API keys or load from environment variables if not provided
         """
@@ -56,27 +53,6 @@ class ProductMarketingAutomation:
             self.sendgrid_enabled = True
             print("SendGrid configured.")
         
-        # Initialize Google Drive if credentials provided
-        self.drive_service = None
-        if google_credentials_path or os.environ.get("GOOGLE_CREDENTIALS_PATH"):
-            self._init_google_drive(google_credentials_path)
-    
-    def _init_google_drive(self, credentials_path=None):
-        """
-        Initialize Google Drive API client using credentials file
-        """
-        creds_path = credentials_path or os.environ.get("GOOGLE_CREDENTIALS_PATH")
-        try:
-            with open(creds_path, 'r') as f:
-                creds_data = json.load(f)
-                
-            creds = Credentials.from_authorized_user_info(creds_data)
-            self.drive_service = build('drive', 'v3', credentials=creds)
-            print("Successfully connected to Google Drive")
-        except Exception as e:
-            print(f"Error connecting to Google Drive: {e}")
-            print("Google Drive functionality will be disabled")
-    
     def generate_ai_prompt(self, product_title, product_description):
         """
         Generate creative prompt using OpenAI - now returns a fixed style prompt.
@@ -109,49 +85,6 @@ class ProductMarketingAutomation:
             print(f"Error uploading to Cloudinary: {e}")
             return None
 
-    def upload_to_drive(self, file_path, file_name, folder_id=None):
-        """
-        Upload file to Google Drive
-        """
-        if not self.drive_service:
-            raise ValueError("Google Drive is not configured")
-        
-        print(f"Uploading {file_name} to Google Drive")
-        file_metadata = {'name': file_name}
-        if folder_id:
-            file_metadata['parents'] = [folder_id]
-            
-        media = MediaFileUpload(file_path, resumable=True)
-        file = self.drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
-        
-        file_id = file.get('id')
-        print(f"File uploaded to Google Drive with ID: {file_id}")
-        return file_id
-    
-    def download_from_drive(self, file_id):
-        """
-        Download file from Google Drive
-        """
-        if not self.drive_service:
-            raise ValueError("Google Drive is not configured")
-            
-        print(f"Downloading file {file_id} from Google Drive")
-        request = self.drive_service.files().get_media(fileId=file_id)
-        file_content = BytesIO()
-        downloader = MediaIoBaseDownload(file_content, request)
-        
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-            
-        file_content.seek(0)
-        print("File successfully downloaded from Google Drive")
-        return file_content
-    
     def edit_image_with_openai(self, image_content, prompt):
         """
         Use OpenAI's image editing API
@@ -294,74 +227,71 @@ class ProductMarketingAutomation:
     
     def send_video_email(self, to_email, product_title, cloudinary_video_url):
         """
-        Send email with the link to the Cloudinary video using SendGrid.
+        Send an email with the video link using SendGrid API
         """
-        if not self.sendgrid_enabled:
-            print(f"SendGrid is not enabled. Skipping email to {to_email}.")
+        if not self.sendgrid_enabled or not self.sendgrid_api_key:
+            print("SendGrid is not enabled. Skipping email notification.")
             return False
-        
-        # Ensure you have a verified sender email with SendGrid
-        from_email = os.environ.get("MAIL_DEFAULT_SENDER", "noreply@example.com") 
-        if from_email == "noreply@example.com":
-            print("Warning: MAIL_DEFAULT_SENDER is not set. Using placeholder. Email might fail or go to spam.")
-
-        subject = f"🎉 Your Birthday Video for {product_title} is Ready!"
-        html_content = f"""
-        <html>
-            <body>
-                <h2>Hooray! Your video is ready!</h2>
-                <p>The special birthday video for <strong>{product_title}</strong> has been generated.</p>
-                <p>You can view and download your video here:</p>
-                <p><a href="{cloudinary_video_url}" style="padding: 12px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; font-size: 16px;">Watch Your Video</a></p>
-                <p>Or copy and paste this link into your browser: {cloudinary_video_url}</p>
-                <br>
-                <p>We hope you enjoy it!</p>
-                <p>Best,</p>
-                <p>The Dog Reels Team</p>
-            </body>
-        </html>
-        """
-        message = Mail(
-            from_email=from_email,
-            to_emails=to_email,
-            subject=subject,
-            html_content=html_content
-        )
+            
         try:
+            print(f"Sending video email to {to_email}")
+            
+            html_content = f"""
+            <html>
+                <head>
+                    <title>Your Dog Birthday Card is Ready!</title>
+                </head>
+                <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+                    <div style="text-align: center; background-color: #f9f0ff; padding: 20px; border-radius: 10px;">
+                        <h1 style="color: #8a2be2;">Your Dog Birthday Card is Ready! 🎉</h1>
+                        <p style="font-size: 16px; line-height: 1.5;">We've created a special birthday video for your dog!</p>
+                        
+                        <div style="margin: 25px 0;">
+                            <a href="{cloudinary_video_url}" style="background-color: #8a2be2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;">Watch Your Video</a>
+                        </div>
+                        
+                        <p style="font-size: 14px; color: #666;">The link will be available for 7 days. Don't forget to download your video!</p>
+                        
+                        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #888;">
+                            <p>Thank you for using our Dog Birthday Card Generator!</p>
+                        </div>
+                    </div>
+                </body>
+            </html>
+            """
+            
+            message = Mail(
+                from_email='dogreel-noreply@example.com',
+                to_emails=to_email,
+                subject=f'Your Dog Birthday Card is Ready! 🎂🐶',
+                html_content=html_content
+            )
+            
             sg = SendGridAPIClient(self.sendgrid_api_key)
             response = sg.send(message)
-            print(f"Email sent to {to_email}. Status Code: {response.status_code}")
-            if response.status_code >= 200 and response.status_code < 300:
-                return True
-            else:
-                print(f"SendGrid error: {response.body}")
-                return False
+            
+            print(f"Email sent successfully! Status code: {response.status_code}")
+            return True
         except Exception as e:
-            print(f"Error sending email via SendGrid: {e}")
+            print(f"Error sending email: {e}")
             return False
 
-    def process_product(self, product_photo_path, product_title, product_description, user_email, # Added user_email
-                       upload_to_drive=True, folder_id=None): # Removed smtp_settings
+    def process_product(self, product_photo_path, product_title, product_description, user_email,
+                   upload_to_drive=False, folder_id=None): # Changed default to False
         """
-        Process product through the entire workflow
+        Process a product through the complete workflow:
+        1. Generate AI prompt
+        2. Edit the product image
+        3. Upload edited image
+        4. Create Runway video
+        5. Upload final video to Cloudinary
+        6. Send email with Cloudinary link
+        7. Return the video URL
         """
         print(f"\n=== Starting process for: {product_title} for user {user_email} ===\n")
         results = {
             "product_title": product_title,
         }
-        
-        # (Optional) Upload original to Google Drive 
-        file_id = None
-        if upload_to_drive and self.drive_service:
-            try:
-                file_id = self.upload_to_drive(
-                    product_photo_path, 
-                    f"{product_title}_{time.strftime('%Y%m%d-%H%M%S')}_original", # Unique name
-                    folder_id
-                )
-                results["drive_file_id"] = file_id
-            except Exception as e:
-                print(f"Failed to upload original to Drive: {e}")
         
         # Generate AI prompt for image editing
         ai_prompt = self.generate_ai_prompt(product_title, product_description)
@@ -455,7 +385,6 @@ def main():
     
     config = {
         "openai_api_key": os.environ.get("OPENAI_API_KEY"),
-        "google_credentials_path": os.environ.get("GOOGLE_CREDENTIALS_PATH"), # For GDrive
         "imgbb_api_key": os.environ.get("IMGBB_API_KEY"), # For intermediate image for Runway
         "runway_api_key": os.environ.get("RUNWAY_API_KEY"),
         "cloudinary_cloud_name": os.environ.get("CLOUDINARY_CLOUD_NAME"),
@@ -471,7 +400,6 @@ def main():
     try:
         automation = ProductMarketingAutomation(
             openai_api_key=config["openai_api_key"],
-            google_credentials_path=config["google_credentials_path"],
             imgbb_api_key=config["imgbb_api_key"],
             runway_api_key=config["runway_api_key"],
             cloudinary_cloud_name=config["cloudinary_cloud_name"],

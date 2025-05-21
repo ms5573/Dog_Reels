@@ -4,10 +4,10 @@ import path from 'path';
 
 export async function GET(
   request: NextRequest,
-  context: { params: { id: string } }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const taskId = context.params.id;
+    const taskId = params.id;
     const outputDir = path.join(process.cwd(), 'Output');
     
     // First check if we have a status file with a videoPath

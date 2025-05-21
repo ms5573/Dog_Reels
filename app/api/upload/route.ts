@@ -31,10 +31,11 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const dogPhoto = formData.get('dogPhoto') as File;
     const message = formData.get('message') as string;
+    const email = formData.get('email') as string;
 
-    if (!dogPhoto || !message) {
+    if (!dogPhoto || !message || !email) {
       return NextResponse.json(
-        { error: 'Missing required fields' },
+        { error: 'Missing required fields (dogPhoto, message, or email)' },
         { status: 400 }
       );
     }
@@ -54,113 +55,105 @@ export async function POST(request: NextRequest) {
     // Save message to a file
     const messagePath = path.join(outputDir, `${taskId}.txt`);
     fs.writeFileSync(messagePath, message);
+    
+    // Save email to a file (or pass as arg directly)
+    const emailPath = path.join(outputDir, `${taskId}_email.txt`);
+    fs.writeFileSync(emailPath, email);
 
     // Create a task status file to track progress
     const statusFile = path.join(outputDir, `${taskId}_status.json`);
     updateTaskStatus(statusFile, 'PENDING', 'Uploading...', {
-      created: new Date().toISOString()
+      created: new Date().toISOString(),
+      userEmail: email
     });
 
     // Create a log file for this task
     const logFile = path.join(outputDir, `${taskId}_processing.log`);
-    fs.writeFileSync(logFile, `Processing started: ${new Date().toISOString()}\n`);
+    fs.writeFileSync(logFile, `Processing started for task ${taskId} for email ${email}: ${new Date().toISOString()}\n`);
 
     // Run the Python Chibi-Clip process asynchronously
-    // Use the birthday-dance action to create a birthday themed animation
     try {
-      // Update status to PROCESSING before starting the command
       updateTaskStatus(statusFile, 'PROCESSING', 'Starting image processing...');
       
-      // Use conda run with the proper environment that has requests installed
-      const command = `conda run -n chibi_env python chibi_clip/chibi_clip.py "${imagePath}" --action "birthday-dance" --extended-duration 45 --verbose`;
+      // IMPORTANT: Sanitize/escape inputs for command execution if they are directly used in the command string.
+      // For this script, we are passing paths and a simple action string.
+      // The product_title and product_description for the python script will be derived from message or a fixed value.
+      // The email is now passed as a command line argument.
+      const productTitle = "Dog Birthday Video";
+      const productDescription = message;
+
+      // Construct the command to run the Python script
+      // Ensure paths with spaces are quoted. The email is also quoted.
+      const command = `conda run -n chibi_env python product_marketing_automation.py "${imagePath}" "${productTitle}" "${productDescription}" --email "${email}" >> "${logFile}" 2>&1`;
       
       console.log(`Executing command: ${command}`);
       
-      // Start the async process
-      const process = execPromise(command);
-      
-      // Set up a periodic check for process output
-      const checkInterval = setInterval(async () => {
-        // Check if we can determine the current stage from any output log files
-        // For now, just update the status to show it's still processing
-        updateTaskStatus(statusFile, 'PROCESSING', 'Creating your birthday card animation...');
-      }, 10000);
-      
-      process
-        .then(({ stdout, stderr }) => {
-          // Clear the interval when the process completes
-          clearInterval(checkInterval);
-          
-          console.log('Chibi-Clip process completed');
-          console.log('Output:', stdout);
-          
-          // Save the output to the log file
-          fs.appendFileSync(logFile, `\n--- STDOUT ---\n${stdout}\n`);
-          if (stderr) {
-            fs.appendFileSync(logFile, `\n--- STDERR ---\n${stderr}\n`);
-          }
-          
-          // Look for CloudFront URL in the output
-          const cloudfrontMatch = stdout.match(/https:\/\/dnznrvs05pmza\.cloudfront\.net\/[a-zA-Z0-9-]+\.mp4\?_jwt=[a-zA-Z0-9_.-]+/);
-          let cloudfrontUrl = null;
-          
-          if (cloudfrontMatch) {
-            cloudfrontUrl = cloudfrontMatch[0];
-            console.log(`Found CloudFront URL: ${cloudfrontUrl}`);
-          }
-          
-          const extendedVideoMatch = stdout.match(/Extended video with music .+? saved to: (.+\.mp4)/);
-          const videoPathMatch = stdout.match(/"local_video_path": "(.+\.mp4)"/);
-          
-          const videoPath = extendedVideoMatch ? extendedVideoMatch[1] : 
-                            videoPathMatch ? videoPathMatch[1] : null;
-          
-          if (videoPath && fs.existsSync(videoPath)) {
-            // Update status to COMPLETE with the result URL and CloudFront URL if available
-            updateTaskStatus(statusFile, 'COMPLETE', 'Your birthday card is ready!', {
-              result_url: `/api/result/${taskId}`,
-              videoPath: videoPath,
-              cloudfront_url: cloudfrontUrl,
-              completed: new Date().toISOString()
-            });
-          } else {
-            // Update the status file with error information
-            updateTaskStatus(statusFile, 'FAILED', 'Video generation failed', {
-              error: 'Could not find generated video',
-              completed: new Date().toISOString()
-            });
-          }
-        })
-        .catch((error) => {
-          // Clear the interval when the process fails
-          clearInterval(checkInterval);
-          
-          console.error('Error during Chibi-Clip processing:', error);
-          fs.appendFileSync(logFile, `\n--- ERROR ---\n${error.message}\n${error.stack || ''}\n`);
-          
-          updateTaskStatus(statusFile, 'FAILED', 'Processing failed', {
-            error: error.message,
+      // Start the async process without awaiting its completion here
+      exec(command, (error, stdout, stderr) => {
+        fs.appendFileSync(logFile, `\n--- Python Script Execution Finished ---`);
+        fs.appendFileSync(logFile, `\nTimestamp: ${new Date().toISOString()}`);
+
+        if (error) {
+          console.error(`Python script execution error for task ${taskId}:`, error);
+          fs.appendFileSync(logFile, `\nEXECUTION ERROR: ${error.message}\n${error.stack || ''}`);
+          updateTaskStatus(statusFile, 'FAILED', 'Video generation script failed', {
+            error: `Script execution failed: ${error.message}`,
             completed: new Date().toISOString()
           });
-        });
+          return;
+        }
 
-      // Don't wait for the process to complete - return immediately
+        let finalCloudinaryUrl = null;
+        try {
+            const scriptOutput = fs.readFileSync(logFile, 'utf-8');
+            const cloudinaryMatch = scriptOutput.match(/Final Video URL \(Cloudinary\): (https:\/\/[^\s]+)/);
+            if (cloudinaryMatch && cloudinaryMatch[1]) {
+                finalCloudinaryUrl = cloudinaryMatch[1];
+                console.log(`Found Cloudinary URL in script output for task ${taskId}: ${finalCloudinaryUrl}`);
+            }
+        } catch (readError) {
+            console.error(`Error reading log file for task ${taskId} to find Cloudinary URL:`, readError);
+        }
+
+        if (finalCloudinaryUrl) {
+            updateTaskStatus(statusFile, 'COMPLETE', 'Video processed and email sent!', {
+                result_url: finalCloudinaryUrl,
+                videoPath: finalCloudinaryUrl,
+                cloudfront_url: finalCloudinaryUrl,
+                completed: new Date().toISOString()
+            });
+        } else {
+            console.warn(`Python script completed for task ${taskId}, but Cloudinary URL not found in logs.`);
+            updateTaskStatus(statusFile, 'FAILED', 'Processing complete, but final video URL missing', {
+                error: 'Could not retrieve final video URL after processing. Check logs.',
+                completed: new Date().toISOString()
+            });
+        }
+      });
+
       return NextResponse.json({
         success: true,
         task_id: taskId,
-        message: 'Upload successful, processing started'
+        message: 'Upload successful, processing started. You will receive an email with the video link.'
       });
+
     } catch (error) {
-      console.error('Execution error:', error);
+      console.error('Execution error in POST /api/upload:', error);
+      if (fs.existsSync(statusFile)) {
+        updateTaskStatus(statusFile, 'FAILED', 'Failed to start processing command', {
+          error: error.message,
+          completed: new Date().toISOString()
+        });
+      }
       return NextResponse.json(
         { error: 'Failed to start processing' },
         { status: 500 }
       );
     }
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error('General error in POST /api/upload:', error);
     return NextResponse.json(
-      { error: 'Upload failed' },
+      { error: 'Upload failed due to an unexpected error' },
       { status: 500 }
     );
   }

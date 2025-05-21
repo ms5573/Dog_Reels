@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Upload, MessageSquare, Gift, Sparkles, Cake, Music } from "lucide-react"
+import { Upload, MessageSquare, Gift, Sparkles, Cake, Music, MailCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import UploadForm from "@/components/upload-form"
@@ -34,11 +34,13 @@ export default function Home() {
   const handleSubmit = async (formData: FormData) => {
     try {
       setCurrentStep("processing")
-      setProcessingStage("Uploading...")
+      setProcessingStage("Uploading your photo and details...")
       setRetryCount(0)
       setPollingActive(false)
       setVideoVerified(false)
       setCloudfrontUrl(null)
+      setResultUrl(null)
+      setErrorMessage(null)
 
       // Submit the form data to the API
       const response = await fetch("/api/upload", {
@@ -47,114 +49,117 @@ export default function Home() {
       })
 
       if (!response.ok) {
-        throw new Error("Failed to upload")
+        const errorData = await response.json().catch(() => ({ error: "Upload request failed" }));
+        throw new Error(errorData.error || "Failed to upload")
       }
 
       const data = await response.json()
-      setTaskId(data.task_id)
-      
-      // Polling will be started by the useEffect
-    } catch (error) {
+      if (data.success && data.task_id) {
+        setTaskId(data.task_id)
+        // Polling will be started by the useEffect once taskId is set and currentStep is processing
+      } else {
+        throw new Error(data.message || "Failed to start processing task.")
+      }
+    } catch (error: any) {
       console.error("Error submitting form:", error)
       setCurrentStep("failed")
-      setErrorMessage("Failed to upload. Please try again.")
+      setErrorMessage(error.message || "Failed to upload. Please try again.")
     }
   }
 
   const pollStatus = async (id: string) => {
-    if (!pollingActive) return;
+    if (currentStep !== 'processing') {
+        setPollingActive(false);
+        return;
+    }
     
     try {
       const response = await fetch(`/api/status/${id}`)
 
       if (!response.ok) {
-        throw new Error("Failed to get status")
+        if (response.status === 404 && retryCount < 5) {
+             console.warn(`Status 404 for task ${id}, retrying... (attempt ${retryCount + 1})`)
+             setProcessingStage("Initializing processing... please wait.")
+             const newRetryCount = retryCount + 1;
+             setRetryCount(newRetryCount);
+             scheduleNextPoll(id, 3000 + (1000 * newRetryCount));
+             return;
+        }
+        throw new Error(`Failed to get status: ${response.statusText}`)
       }
 
       const data = await response.json()
       console.log("Status update:", data)
+      setProcessingStage(data.stage || "Processing your request...")
 
       switch (data.status) {
         case "PENDING":
-          setProcessingStage(data.stage || "Processing your request...")
+          setRetryCount(0) 
           scheduleNextPoll(id);
           break;
           
         case "PROCESSING":
-          setProcessingStage(data.stage || "Creating your birthday card...")
-          // Reset retry count since we got a valid processing status
           setRetryCount(0) 
-          scheduleNextPoll(id, 2000); // Poll faster during processing
+          scheduleNextPoll(id, 2000);
           break;
           
         case "COMPLETE":
-          // Check for CloudFront URL if available
-          if (data.cloudfront_url) {
-            setCloudfrontUrl(data.cloudfront_url);
-            console.log("CloudFront URL found:", data.cloudfront_url);
-          }
-          
+          setPollingActive(false);
           if (data.result_url) {
-            // Verify video is actually available by making a HEAD request
-            try {
-              const videoCheck = await fetch(data.result_url, { method: 'HEAD' });
-              if (videoCheck.ok) {
-                // Video exists and is ready
-                setVideoVerified(true);
-                setResultUrl(data.result_url);
-                setCurrentStep("complete");
-                setPollingActive(false);
-              } else {
-                // Video not ready yet, continue polling
-                console.log("Video URL returned 404, continuing to poll");
-                setProcessingStage("Finalizing your video...");
-                scheduleNextPoll(id, 1500); // Poll faster when we're close
-              }
-            } catch (e) {
-              // Network error checking video - continue polling
-              console.log("Error checking video availability:", e);
-              scheduleNextPoll(id);
-            }
+            setResultUrl(data.result_url);
+            setCloudfrontUrl(data.result_url);
+            setCurrentStep("complete"); 
+            setProcessingStage("Video sent to your email!");
           } else {
-            console.error("Complete status but no result URL")
-            scheduleNextPoll(id)
+            console.error("COMPLETE status but no Cloudinary result_url for email.");
+            setCurrentStep("failed");
+            setErrorMessage("Processing finished, but there was an issue getting the video link for your email. Please contact support.");
           }
           break;
           
         case "FAILED":
+          setPollingActive(false);
           setCurrentStep("failed")
-          setErrorMessage(data.error || "Something went wrong. Please try again.")
-          setPollingActive(false)
+          setErrorMessage(data.error || "Video generation failed. Please try again.")
           break;
           
         default:
-          setProcessingStage("Processing your request...")
+          console.warn(`Unknown task status received: ${data.status}`);
+          setRetryCount(0)
           scheduleNextPoll(id)
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error polling status:", error)
-      
-      // Increment retry count
       const newRetryCount = retryCount + 1;
       setRetryCount(newRetryCount);
       
-      // If we've retried too many times, show error
-      if (newRetryCount > 10) { // Increased max retries
+      if (newRetryCount > 15) {
+        setPollingActive(false);
         setCurrentStep("failed")
-        setErrorMessage("Failed to check status. Please try again.")
-        setPollingActive(false)
+        setErrorMessage("Failed to get processing status after multiple attempts. Please try again or contact support.")
       } else {
-        // Otherwise retry after a longer delay
-        setTimeout(() => pollStatus(id), 2000 + (1000 * newRetryCount))
+        scheduleNextPoll(id, 3000 + (1000 * newRetryCount));
       }
     }
   }
   
-  const scheduleNextPoll = (id: string, delay = 3000) => {
-    if (pollingActive) {
+  const scheduleNextPoll = (id: string, delay = 5000) => {
+    if (currentStep === 'processing') {
       setTimeout(() => pollStatus(id), delay)
     }
   }
+
+  const resetForm = () => {
+    setCurrentStep("upload");
+    setTaskId(null);
+    setResultUrl(null);
+    setCloudfrontUrl(null);
+    setErrorMessage(null);
+    setVideoVerified(false);
+    setProcessingStage("Uploading...");
+    setRetryCount(0);
+    setPollingActive(false);
+  };
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-between p-4 md:p-24 bg-gradient-to-br from-pink-100 via-purple-50 to-blue-100">
@@ -178,6 +183,7 @@ export default function Home() {
           </h1>
           <p className="text-xl text-gray-700 max-w-2xl mx-auto">
             Transform your beloved pup into an adorable animated character dancing to the birthday song!
+            You'll receive the final video via email.
           </p>
         </div>
 
@@ -185,19 +191,30 @@ export default function Home() {
           {currentStep === "upload" && <UploadForm onSubmit={handleSubmit} />}
 
           {currentStep === "processing" && (
-            <>
-              <ProcessingStatus stage={processingStage} />
-              {retryCount > 0 && (
-                <p className="text-amber-600 text-center mt-4">
-                  Still working on your birthday card... Thank you for your patience!
-                </p>
-              )}
-            </>
+            <ProcessingStatus stage={processingStage} />
           )}
-
-          {currentStep === "complete" && resultUrl && videoVerified && 
-            <ResultDisplay resultUrl={resultUrl} cloudfrontUrl={cloudfrontUrl} />
-          }
+          
+          {currentStep === "complete" && (
+            <div className="text-center p-6">
+                <MailCheck className="h-16 w-16 text-green-500 mx-auto mb-4" />
+                <h2 className="text-2xl font-bold text-purple-600 mb-3">Video Sent!</h2>
+                <p className="text-gray-700 mb-6">
+                    Your dog's birthday video has been created and a link to it has been sent to your email address.
+                    Please check your inbox (and spam folder, just in case!).
+                </p>
+                {resultUrl && (
+                    <p className="text-sm text-gray-500 mb-6">
+                        Direct link (for reference): <a href={resultUrl} target="_blank" rel="noopener noreferrer" className="text-purple-500 hover:underline">{resultUrl}</a>
+                    </p>
+                )}
+                <Button 
+                    onClick={resetForm} 
+                    className="bg-purple-600 hover:bg-purple-700"
+                >
+                    Create Another Card
+                </Button>
+            </div>
+          )}
 
           {currentStep === "failed" && (
             <div className="text-center p-6">
@@ -205,14 +222,7 @@ export default function Home() {
                 {errorMessage || "Sorry, something went wrong. Please try again."}
               </div>
               <Button 
-                onClick={() => {
-                  setCurrentStep("upload");
-                  setTaskId(null);
-                  setResultUrl(null);
-                  setCloudfrontUrl(null);
-                  setErrorMessage(null);
-                  setVideoVerified(false);
-                }} 
+                onClick={resetForm} 
                 className="bg-purple-600 hover:bg-purple-700"
               >
                 Try Again
@@ -230,39 +240,38 @@ export default function Home() {
               <div className="bg-purple-100 p-4 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
                 <Upload className="h-8 w-8 text-purple-600" />
               </div>
-              <h3 className="font-bold text-lg mb-3 text-purple-700">Upload Your Dog Photo</h3>
+              <h3 className="font-bold text-lg mb-3 text-purple-700">1. Upload & Email</h3>
               <p className="text-gray-600">
-                Select a clear photo of your dog to transform into a cute animated character with AI magic.
+                Select a dog photo, add a birthday message, and provide your email address.
               </p>
             </div>
             <div className="p-6 bg-white rounded-lg shadow-md border border-purple-100">
               <div className="bg-purple-100 p-4 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
                 <Music className="h-8 w-8 text-purple-600" />
               </div>
-              <h3 className="font-bold text-lg mb-3 text-purple-700">Add Birthday Music</h3>
+              <h3 className="font-bold text-lg mb-3 text-purple-700">2. AI Magic</h3>
               <p className="text-gray-600">
-                Your dog will dance to the classic "Happy Birthday" tune with a party hat and festive animations.
+                Our AI transforms your photo, animates your dog, and adds festive birthday music.
               </p>
             </div>
             <div className="p-6 bg-white rounded-lg shadow-md border border-purple-100">
               <div className="bg-purple-100 p-4 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
                 <Gift className="h-8 w-8 text-purple-600" />
               </div>
-              <h3 className="font-bold text-lg mb-3 text-purple-700">Share Your Card</h3>
+              <h3 className="font-bold text-lg mb-3 text-purple-700">3. Receive & Share</h3>
               <p className="text-gray-600">
-                Download or share your custom animated birthday card with friends and family for a unique celebration!
+                You'll get an email with a link to your unique video, ready to download and share!
               </p>
             </div>
           </div>
         </div>
         
-        {/* Hide the preview section when showing a real result */}
-        {currentStep !== "complete" && (
+        {(currentStep === "upload" || currentStep === "processing") && (
           <div className="mt-12 mb-6 p-6 bg-white rounded-lg shadow-md max-w-4xl border border-purple-100">
             <h2 className="text-xl font-bold text-purple-700 mb-3">Preview Example</h2>
             <div className="aspect-video bg-gray-100 rounded-lg flex items-center justify-center">
               <div className="text-center p-4">
-                <p className="text-gray-500">Preview of your dog's dancing animation will appear here</p>
+                <p className="text-gray-500">A preview of your dog's dancing animation will appear here after processing.</p>
               </div>
             </div>
           </div>

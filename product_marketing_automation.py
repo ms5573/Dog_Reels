@@ -7,12 +7,14 @@ from io import BytesIO
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import argparse
+import cloudinary
+import cloudinary.uploader
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
 class ProductMarketingAutomation:
-    def __init__(self, openai_api_key=None, google_credentials_path=None, imgbb_api_key=None, runway_api_key=None):
+    def __init__(self, openai_api_key=None, google_credentials_path=None, imgbb_api_key=None, runway_api_key=None, cloudinary_cloud_name=None, cloudinary_api_key=None, cloudinary_api_secret=None, sendgrid_api_key=None):
         """
         Initialize with API keys or load from environment variables if not provided
         """
@@ -21,13 +23,38 @@ class ProductMarketingAutomation:
         self.imgbb_api_key = imgbb_api_key or os.environ.get("IMGBB_API_KEY")
         self.runway_api_key = runway_api_key or os.environ.get("RUNWAY_API_KEY")
         
+        self.cloudinary_cloud_name = cloudinary_cloud_name or os.environ.get("CLOUDINARY_CLOUD_NAME")
+        self.cloudinary_api_key = cloudinary_api_key or os.environ.get("CLOUDINARY_API_KEY")
+        self.cloudinary_api_secret = cloudinary_api_secret or os.environ.get("CLOUDINARY_API_SECRET")
+        self.sendgrid_api_key = sendgrid_api_key or os.environ.get("SENDGRID_API_KEY")
+
         # Check for required credentials
         if not self.openai_api_key:
             raise ValueError("OpenAI API key is required")
-        if not self.imgbb_api_key:
-            raise ValueError("ImgBB API key is required")
+        # ImgBB is now optional if Cloudinary is primary for final video
+        # if not self.imgbb_api_key:
+        #     raise ValueError("ImgBB API key is required")
         if not self.runway_api_key:
             raise ValueError("Runway API key is required")
+        if not (self.cloudinary_cloud_name and self.cloudinary_api_key and self.cloudinary_api_secret):
+            print("Cloudinary credentials not fully set. Video upload to Cloudinary will be disabled.")
+            self.cloudinary_enabled = False
+        else:
+            self.cloudinary_enabled = True
+            cloudinary.config( 
+                cloud_name = self.cloudinary_cloud_name, 
+                api_key = self.cloudinary_api_key, 
+                api_secret = self.cloudinary_api_secret,
+                secure = True
+            )
+            print("Cloudinary configured.")
+
+        if not self.sendgrid_api_key:
+            print("SendGrid API key not set. Email notifications will be disabled.")
+            self.sendgrid_enabled = False
+        else:
+            self.sendgrid_enabled = True
+            print("SendGrid configured.")
         
         # Initialize Google Drive if credentials provided
         self.drive_service = None
@@ -54,45 +81,34 @@ class ProductMarketingAutomation:
         """
         Generate creative prompt using OpenAI - now returns a fixed style prompt.
         """
-        print(f"Generating fixed style AI prompt (product: {product_title})") # Title still useful for logging
-        
-        # System message defines the desired output style
+        print(f"Generating fixed style AI prompt (product: {product_title})") 
         style_prompt = "Charming vector illustration of a chibi-style dog with flat pastel, bold black outlines, subtle cel-shading and natural soft shadows, centered on a clean light-beige background with a faint oval ground shadow, minimalistic and playful design."
-        
-        # The user message to OpenAI's chat completion can be simple or just reiterate the style for image editing.
-        # For image editing, the main prompt is passed separately to the image API.
-        # Here, we are just using the chat completion to perhaps refine or confirm the style description if needed,
-        # but for direct image editing, this step might be simplified to just return style_prompt directly.
-        # For now, let's assume the original structure was for a more complex prompt generation.
-        # We will return the style_prompt directly for the image editing.
+        return style_prompt
 
-        # headers = {
-        #     "Content-Type": "application/json",
-        #     "Authorization": f"Bearer {self.openai_api_key}"
-        # }
-        # payload = {
-        #     "model": "gpt-4.1",
-        #     "messages": [
-        #         {"role": "system", "content": style_prompt},
-        #         {"role": "user", "content": f"Ensure the style is captured for an image of a {product_title}."} # Simpler user content
-        #     ]
-        # }
-        
-        # try:
-        #     response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        #     response.raise_for_status()
-        #     # The actual prompt for image editing should be the style_prompt itself.
-        #     # The response from chat completion might be a confirmation or a slightly rephrased version.
-        #     # For simplicity and directness for image editing, we will return the raw style_prompt.
-        #     # return response.json()["choices"][0]["message"]["content"]
-        #     return style_prompt 
-        # except requests.exceptions.RequestException as e:
-        #     print(f"Error generating AI prompt: {e}")
-        #     if hasattr(e, 'response') and e.response and e.response.text:
-        #         print(f"Response error: {e.response.text}")
-        #     raise
-        return style_prompt # Directly return the style prompt
-    
+    def upload_to_cloudinary(self, local_video_path, public_id=None, folder="dog_reels_videos"):
+        if not self.cloudinary_enabled:
+            print("Cloudinary is not enabled. Skipping upload.")
+            return None
+        try:
+            print(f"Uploading {local_video_path} to Cloudinary in folder {folder}...")
+            response = cloudinary.uploader.upload(
+                local_video_path,
+                resource_type="video",
+                public_id=public_id, # Can be filename without extension
+                folder=folder,
+                overwrite=True,
+                # Example of eager transformation for web-friendly version, optional
+                # eager=[
+                #    {"width": 640, "height": 360, "crop": "limit", "format": "mp4"},
+                #    {"width": 320, "height": 180, "crop": "limit", "format": "webm"}
+                # ]
+            )
+            print(f"Cloudinary upload successful. Secure URL: {response.get('secure_url')}")
+            return response.get('secure_url')
+        except Exception as e:
+            print(f"Error uploading to Cloudinary: {e}")
+            return None
+
     def upload_to_drive(self, file_path, file_name, folder_id=None):
         """
         Upload file to Google Drive
@@ -145,7 +161,6 @@ class ProductMarketingAutomation:
             "Authorization": f"Bearer {self.openai_api_key}"
         }
         
-        # Use bytes directly if it's already a BytesIO object
         if isinstance(image_content, BytesIO):
             image_bytes = image_content.getvalue()
         else:
@@ -154,7 +169,7 @@ class ProductMarketingAutomation:
         files = {
             'image': ('image.png', image_bytes, 'image/png'),
             'prompt': (None, prompt),
-            'model': (None, 'gpt-image-1')
+            'model': (None, 'gpt-image-1') # Assuming this model is still desired/valid
         }
         
         try:
@@ -170,8 +185,12 @@ class ProductMarketingAutomation:
     
     def upload_to_imgbb(self, image_base64):
         """
-        Upload image to ImgBB hosting
+        Upload image to ImgBB hosting (can be kept as a fallback or for intermediate images)
         """
+        if not self.imgbb_api_key:
+            print("ImgBB API key not provided. Skipping ImgBB upload.")
+            return None # Or raise an error if ImgBB is critical for a step
+
         print("Uploading image to ImgBB")
         url = "https://api.imgbb.com/1/upload"
         payload = {
@@ -189,7 +208,8 @@ class ProductMarketingAutomation:
             print(f"Error uploading to ImgBB: {e}")
             if hasattr(e, 'response') and e.response and e.response.text:
                 print(f"Response error: {e.response.text}")
-            raise
+            # Decide if this should raise or return None
+            return None 
     
     def generate_runway_video(self, image_url):
         """
@@ -198,16 +218,16 @@ class ProductMarketingAutomation:
         print("Generating video with Runway")
         headers = {
             "Authorization": f"Bearer {self.runway_api_key}",
-            "X-Runway-Version": "2024-11-06",
+            "X-Runway-Version": "2024-11-06", # Check if this version is current
             "Content-Type": "application/json"
         }
         
         payload = {
             "promptImage": image_url,
-            "model": "gen4_turbo",
+            "model": "gen4_turbo", # Check if this model is current
             "promptText": "Seamless looped 2D animation of the chibi-style spaniel-mix puppy running in place—flat pastel orange and cream fur with bold black outlines, teal collar, smooth leg and ear motion, subtle cel-shading, on a clean light-beige background with a soft oval ground shadow, minimalistic children's storybook style, continuous playful motion without cuts or zooms.",
-            "duration": 5,  # Changed from string "5" to integer 5
-            "ratio": "960:960"
+            "duration": 5,
+            "ratio": "960:960" # Consider if this ratio is always desired
         }
         
         try:
@@ -228,7 +248,7 @@ class ProductMarketingAutomation:
         """
         headers = {
             "Authorization": f"Bearer {self.runway_api_key}",
-            "X-Runway-Version": "2024-11-06"
+            "X-Runway-Version": "2024-11-06" # Match version from generate_runway_video
         }
         
         url = f"https://api.dev.runwayml.com/v1/tasks/{task_id}"
@@ -240,211 +260,254 @@ class ProductMarketingAutomation:
             print(f"Error checking Runway task status: {e}")
             raise
     
-    def wait_for_runway_video(self, task_id, initial_wait=60, poll_interval=5, max_attempts=20):
+    def wait_for_runway_video(self, task_id, initial_wait=60, poll_interval=10, max_attempts=30): # Increased poll_interval and max_attempts
         """
         Poll Runway API until video is ready, with configurable waits
         """
-        print(f"Waiting {initial_wait} seconds before first status check...")
+        print(f"Waiting {initial_wait} seconds before first Runway status check...")
         time.sleep(initial_wait)
         
         attempts = 0
         while attempts < max_attempts:
             attempts += 1
-            print(f"Checking video status (attempt {attempts}/{max_attempts})...")
+            print(f"Checking Runway video status (attempt {attempts}/{max_attempts})...")
             
             task_status = self.check_runway_task_status(task_id)
             status = task_status.get("status")
             
-            if status == "COMPLETED":
-                print(f"Video generation completed after {attempts} checks!")
-                return task_status
-            elif status == "SUCCEEDED":
-                print(f"Video generation SUCCEEDED after {attempts} checks!")
+            if status == "COMPLETED" or status == "SUCCEEDED": # Handle both success states
+                print(f"Runway video generation {status} after {attempts} checks!")
                 return task_status
             elif status == "FAILED":
-                raise Exception(f"Video generation failed: {task_status.get('error', 'Unknown error')}")
+                error_message = task_status.get('error', 'Unknown error')
+                print(f"Runway video generation failed: {error_message}")
+                raise Exception(f"Runway video generation failed: {error_message}")
             elif status in ["RUNNING", "PENDING"]:
-                print(f"Video still generating (status: {status}). Waiting {poll_interval} seconds...")
+                print(f"Runway video still generating (status: {status}). Waiting {poll_interval} seconds...")
                 time.sleep(poll_interval)
-            else:
-                print(f"Unknown status: {status}. Waiting {poll_interval} seconds...")
+            else: # Handle unexpected statuses
+                print(f"Runway video: Unknown status '{status}'. Raw: {task_status}. Waiting {poll_interval} seconds...")
                 time.sleep(poll_interval)
         
-        raise Exception(f"Timed out after {max_attempts} attempts")
+        print(f"Runway video generation timed out after {max_attempts} attempts.")
+        raise Exception(f"Runway video generation timed out after {max_attempts} attempts")
     
-    def send_email(self, to_email, product_title, image_url, video_url, smtp_settings=None):
+    def send_video_email(self, to_email, product_title, cloudinary_video_url):
         """
-        Send email with marketing materials
+        Send email with the link to the Cloudinary video using SendGrid.
         """
-        if not smtp_settings:
-            smtp_settings = {
-                "server": os.environ.get("SMTP_SERVER", "smtp.gmail.com"),
-                "port": int(os.environ.get("SMTP_PORT", 587)),
-                "username": os.environ.get("SMTP_USERNAME"),
-                "password": os.environ.get("SMTP_PASSWORD")
-            }
-            
-            if not smtp_settings["username"] or not smtp_settings["password"]:
-                raise ValueError("SMTP credentials not provided")
+        if not self.sendgrid_enabled:
+            print(f"SendGrid is not enabled. Skipping email to {to_email}.")
+            return False
         
-        print(f"Sending email to {to_email}")
-        msg = MIMEMultipart()
-        msg["From"] = smtp_settings["username"]
-        msg["To"] = to_email
-        msg["Subject"] = f"Marketing Materials: {product_title}"
-        
-        body = f"""
-        Hey there,
-        
-        Here are the requested marketing materials for your {product_title}:
-        
-        Image: {image_url}
-        
-        Video: {video_url}
-        
-        Cheers!
+        # Ensure you have a verified sender email with SendGrid
+        from_email = os.environ.get("MAIL_DEFAULT_SENDER", "noreply@example.com") 
+        if from_email == "noreply@example.com":
+            print("Warning: MAIL_DEFAULT_SENDER is not set. Using placeholder. Email might fail or go to spam.")
+
+        subject = f"🎉 Your Birthday Video for {product_title} is Ready!"
+        html_content = f"""
+        <html>
+            <body>
+                <h2>Hooray! Your video is ready!</h2>
+                <p>The special birthday video for <strong>{product_title}</strong> has been generated.</p>
+                <p>You can view and download your video here:</p>
+                <p><a href="{cloudinary_video_url}" style="padding: 12px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; font-size: 16px;">Watch Your Video</a></p>
+                <p>Or copy and paste this link into your browser: {cloudinary_video_url}</p>
+                <br>
+                <p>We hope you enjoy it!</p>
+                <p>Best,</p>
+                <p>The Dog Reels Team</p>
+            </body>
+        </html>
         """
-        
-        msg.attach(MIMEText(body, "plain"))
-        
+        message = Mail(
+            from_email=from_email,
+            to_emails=to_email,
+            subject=subject,
+            html_content=html_content
+        )
         try:
-            server = smtplib.SMTP(smtp_settings["server"], smtp_settings["port"])
-            server.starttls()
-            server.login(smtp_settings["username"], smtp_settings["password"])
-            server.send_message(msg)
-            server.quit()
-            print("Email sent successfully")
+            sg = SendGridAPIClient(self.sendgrid_api_key)
+            response = sg.send(message)
+            print(f"Email sent to {to_email}. Status Code: {response.status_code}")
+            if response.status_code >= 200 and response.status_code < 300:
+                return True
+            else:
+                print(f"SendGrid error: {response.body}")
+                return False
         except Exception as e:
-            print(f"Error sending email: {e}")
-            raise
-    
-    def process_product(self, product_photo_path, product_title, product_description, email, 
-                       upload_to_drive=True, folder_id=None, smtp_settings=None):
+            print(f"Error sending email via SendGrid: {e}")
+            return False
+
+    def process_product(self, product_photo_path, product_title, product_description, user_email, # Added user_email
+                       upload_to_drive=True, folder_id=None): # Removed smtp_settings
         """
         Process product through the entire workflow
         """
-        print(f"\n=== Starting process for: {product_title} ===\n")
+        print(f"\n=== Starting process for: {product_title} for user {user_email} ===\n")
         results = {
             "product_title": product_title,
-            # "email": email, # Email parameter no longer used for sending
         }
         
-        # Upload to Google Drive (optional)
+        # (Optional) Upload original to Google Drive 
         file_id = None
         if upload_to_drive and self.drive_service:
-            file_id = self.upload_to_drive(
-                product_photo_path, 
-                f"{product_title} (Original)",
-                folder_id
-            )
-            results["drive_file_id"] = file_id
+            try:
+                file_id = self.upload_to_drive(
+                    product_photo_path, 
+                    f"{product_title}_{time.strftime('%Y%m%d-%H%M%S')}_original", # Unique name
+                    folder_id
+                )
+                results["drive_file_id"] = file_id
+            except Exception as e:
+                print(f"Failed to upload original to Drive: {e}")
         
-        # Generate AI prompt
+        # Generate AI prompt for image editing
         ai_prompt = self.generate_ai_prompt(product_title, product_description)
         results["ai_prompt"] = ai_prompt
-        print(f"Generated prompt: {ai_prompt[:100]}...")
+        print(f"Generated AI editing prompt: {ai_prompt[:100]}...")
         
-        # Load image content - either from Google Drive or directly from file
-        if file_id and self.drive_service:
-            image_content = self.download_from_drive(file_id)
-        else:
-            with open(product_photo_path, 'rb') as f:
-                image_content = BytesIO(f.read())
+        # Load image content
+        # For simplicity, assuming product_photo_path is always a local file path
+        with open(product_photo_path, 'rb') as f:
+            image_content_bytes = f.read() # Read as bytes
         
-        # Edit image with OpenAI
-        edited_image_b64 = self.edit_image_with_openai(image_content, ai_prompt)
+        # Edit image with OpenAI (expects bytes or BytesIO)
+        edited_image_b64 = self.edit_image_with_openai(image_content_bytes, ai_prompt)
         
-        # Upload to ImgBB
-        img_url = self.upload_to_imgbb(edited_image_b64)
-        results["image_url"] = img_url
+        # Upload edited image to ImgBB to get a URL for Runway
+        # (Runway needs a URL for promptImage)
+        img_url_for_runway = self.upload_to_imgbb(edited_image_b64)
+        if not img_url_for_runway:
+            print("Failed to upload image to ImgBB. Cannot proceed with Runway video generation.")
+            raise Exception("Failed to get image URL for Runway input.")
+        results["imgbb_image_url"] = img_url_for_runway
         
         # Generate video with Runway
-        task_id = self.generate_runway_video(img_url)
+        runway_task_id = self.generate_runway_video(img_url_for_runway)
         
-        # Wait for video to complete
-        video_result = self.wait_for_runway_video(task_id)
-        video_url = video_result["output"][0]
-        results["video_url"] = video_url
+        # Wait for Runway video to complete
+        runway_video_result = self.wait_for_runway_video(runway_task_id)
+        # Assuming the first output is always the desired video MP4
+        runway_output_video_url = runway_video_result["output"][0] 
+        results["runway_video_download_url"] = runway_output_video_url
         
-        # Send email with results
-        # if email: # Email sending is disabled
-        #     self.send_email(email, product_title, img_url, video_url, smtp_settings)
-        
+        # Download the Runway video locally to then upload to Cloudinary
+        local_runway_video_path = None
+        try:
+            print(f"Downloading Runway video from: {runway_output_video_url}")
+            video_response = requests.get(runway_output_video_url, stream=True)
+            video_response.raise_for_status()
+            
+            # Create a temporary file to save the video
+            temp_video_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            local_runway_video_path = temp_video_file.name
+            with open(local_runway_video_path, 'wb') as f_video:
+                for chunk in video_response.iter_content(chunk_size=8192):
+                    f_video.write(chunk)
+            print(f"Runway video downloaded to temporary path: {local_runway_video_path}")
+
+            # Upload the downloaded Runway video to Cloudinary
+            cloudinary_final_video_url = self.upload_to_cloudinary(
+                local_runway_video_path, 
+                public_id=f"{product_title.replace(' ', '_')}_video_{time.strftime('%Y%m%d%H%M%S')}"
+            )
+            results["cloudinary_video_url"] = cloudinary_final_video_url
+
+            if cloudinary_final_video_url and user_email:
+                self.send_video_email(user_email, product_title, cloudinary_final_video_url)
+            elif not cloudinary_final_video_url:
+                print("Video was not uploaded to Cloudinary. Email not sent.")
+            elif not user_email:
+                print("No user email provided. Video uploaded to Cloudinary but email not sent.")
+
+        except Exception as e:
+            print(f"Error during Runway video download or Cloudinary upload: {e}")
+            # Potentially send an error email or handle differently
+        finally:
+            # Clean up the temporary local video file
+            if local_runway_video_path and os.path.exists(local_runway_video_path):
+                try:
+                    os.remove(local_runway_video_path)
+                    print(f"Cleaned up temporary video file: {local_runway_video_path}")
+                except Exception as e_clean:
+                    print(f"Error cleaning up temp video file {local_runway_video_path}: {e_clean}")
+
         print(f"\n=== Processing complete for: {product_title} ===\n")
         return results
 
 
-# Example usage with more flexible configuration
 def main():
-    # Load configuration from environment or .env file
-    from dotenv import load_dotenv
-    # Explicitly specify the path to .env in the same directory as the script
-    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
-    load_dotenv(dotenv_path=dotenv_path, verbose=True, override=True) # Keep verbose and override for now, remove print lines
+    parser = argparse.ArgumentParser(description="Automate product marketing material generation.")
+    parser.add_argument("photo_path", help="Path to the product photo (e.g., product_photo.jpg)")
+    parser.add_argument("product_title", help="Title of the product (e.g., 'Chibi Dog Illustration')")
+    parser.add_argument("product_description", help="Description of the product.")
+    parser.add_argument("--email", help="User's email address to send the final video link.", required=False) # Make email optional for now
+    parser.add_argument("--upload_to_drive", action='store_true', help="Upload original photo to Google Drive.")
+    parser.add_argument("--drive_folder_id", help="Google Drive folder ID to upload to.", default=None)
     
-    # Example of how to configure the automation with detailed options
+    args = parser.parse_args()
+
+    from dotenv import load_dotenv
+    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+    load_dotenv(dotenv_path=dotenv_path, verbose=True, override=True)
+    
     config = {
-        # API Keys (can be loaded from environment variables)
         "openai_api_key": os.environ.get("OPENAI_API_KEY"),
-        "google_credentials_path": os.environ.get("GOOGLE_CREDENTIALS_PATH"),
-        "imgbb_api_key": os.environ.get("IMGBB_API_KEY"),
+        "google_credentials_path": os.environ.get("GOOGLE_CREDENTIALS_PATH"), # For GDrive
+        "imgbb_api_key": os.environ.get("IMGBB_API_KEY"), # For intermediate image for Runway
         "runway_api_key": os.environ.get("RUNWAY_API_KEY"),
-        
-        # Email settings (not used for sending in this version, but kept for structure)
-        "smtp_settings": {
-            "server": os.environ.get("SMTP_SERVER", "smtp.gmail.com"),
-            "port": int(os.environ.get("SMTP_PORT", 587)),
-            "username": os.environ.get("SMTP_USERNAME"),
-            "password": os.environ.get("SMTP_PASSWORD")
-        }
+        "cloudinary_cloud_name": os.environ.get("CLOUDINARY_CLOUD_NAME"),
+        "cloudinary_api_key": os.environ.get("CLOUDINARY_API_KEY"),
+        "cloudinary_api_secret": os.environ.get("CLOUDINARY_API_SECRET"),
+        "sendgrid_api_key": os.environ.get("SENDGRID_API_KEY"),
+        "mail_default_sender": os.environ.get("MAIL_DEFAULT_SENDER") # For SendGrid
     }
     
-    # Create automation instance
+    if not config["mail_default_sender"] and args.email:
+        print("Warning: MAIL_DEFAULT_SENDER environment variable is not set. Emails may fail or be marked as spam.")
+
     try:
         automation = ProductMarketingAutomation(
             openai_api_key=config["openai_api_key"],
             google_credentials_path=config["google_credentials_path"],
             imgbb_api_key=config["imgbb_api_key"],
-            runway_api_key=config["runway_api_key"]
+            runway_api_key=config["runway_api_key"],
+            cloudinary_cloud_name=config["cloudinary_cloud_name"],
+            cloudinary_api_key=config["cloudinary_api_key"],
+            cloudinary_api_secret=config["cloudinary_api_secret"],
+            sendgrid_api_key=config["sendgrid_api_key"]
         )
         
-        # Process a product
-        product_title_for_run = "Chibi Dog Illustration"
         result = automation.process_product(
-            product_photo_path="product_photo.jpg", # Ensure this file exists
-            product_title=product_title_for_run,
-            product_description="A charming chibi-style dog illustration created from an uploaded photo.",
-            email=None, # Email set to None as it's not being sent
-            # smtp_settings=config["smtp_settings"] # Not needed if email is None
+            product_photo_path=args.photo_path,
+            product_title=args.product_title,
+            product_description=args.product_description,
+            user_email=args.email, 
+            upload_to_drive=args.upload_to_drive,
+            folder_id=args.drive_folder_id
         )
         
-        # Print results
-        print("\n=== Results ===")
-        print(f"Static Image URL: {result['image_url']}")
-        print(f"Animated Video URL: {result['video_url']}")
-
-        # Download and save the video
-        if result.get('video_url'):
-            video_url = result['video_url']
-            # Create a filename for the video
-            safe_title = "".join(c if c.isalnum() else "_" for c in product_title_for_run)
-            video_filename = f"{safe_title}_video.mp4"
-            
-            print(f"Downloading video from {video_url} to {video_filename}...")
-            try:
-                video_response = requests.get(video_url, stream=True)
-                video_response.raise_for_status() # Check if the request was successful
-                with open(video_filename, 'wb') as f:
-                    for chunk in video_response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                print(f"Video saved successfully as {video_filename}")
-            except requests.exceptions.RequestException as e:
-                print(f"Error downloading video: {e}")
-            except IOError as e:
-                print(f"Error saving video file: {e}")
+        print("\n=== Final Results Summary ===")
+        if result.get("imgbb_image_url"):
+            print(f"Edited Image URL (ImgBB for Runway): {result['imgbb_image_url']}")
+        if result.get("runway_video_download_url"):
+             print(f"Runway Output Video URL (raw from Runway): {result['runway_video_download_url']}")
+        if result.get("cloudinary_video_url"):
+            print(f"Final Video URL (Cloudinary): {result['cloudinary_video_url']}")
+        else:
+            print("Final video URL (Cloudinary): Not generated or uploaded.")
         
+        if args.email and result.get("cloudinary_video_url"):
+            print(f"An email with the video link should have been sent to {args.email}.")
+        elif args.email:
+            print(f"Email to {args.email} was not sent as Cloudinary URL was not available.")
+
     except Exception as e:
-        print(f"Error in automation: {e}")
+        print(f"Error in main automation execution: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main() 

@@ -3,10 +3,11 @@
 import type React from "react"
 
 import { useState, useRef } from "react"
-import { Upload, X, Camera, Image, ArrowRight, MessageSquare } from "lucide-react"
+import { Upload, X, Camera, Image, ArrowRight, MessageSquare, Mail } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
 
 interface UploadFormProps {
   onSubmit: (formData: FormData) => void
@@ -16,6 +17,7 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
   const [message, setMessage] = useState("")
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState("")
   const [error, setError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -63,6 +65,11 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
     }
   }
 
+  const isValidEmail = (email: string) => {
+    // Basic email validation regex
+    return /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/.test(email);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -77,9 +84,20 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
       return
     }
 
+    if (!userEmail.trim()) {
+      setError("Please enter your email address")
+      return
+    }
+
+    if (!isValidEmail(userEmail)) {
+        setError("Please enter a valid email address")
+        return
+    }
+
     const formData = new FormData()
     formData.append("dogPhoto", selectedFile)
     formData.append("message", message)
+    formData.append("email", userEmail)
 
     onSubmit(formData)
   }
@@ -154,6 +172,21 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
         />
       </div>
 
+      <div className="space-y-3">
+        <Label htmlFor="userEmail" className="text-lg font-medium text-purple-800 flex items-center gap-2">
+          <Mail className="h-5 w-5" /> Your Email Address
+        </Label>
+        <Input
+          id="userEmail"
+          type="email"
+          placeholder="your.email@example.com"
+          value={userEmail}
+          onChange={(e) => setUserEmail(e.target.value)}
+          className="border-2 border-purple-300 focus:border-purple-500 rounded-lg p-3"
+        />
+        <p className="text-xs text-purple-600">We'll send the final video link to this email.</p>
+      </div>
+
       {error && (
         <div className="text-red-500 text-sm p-3 bg-red-50 border border-red-200 rounded-lg">
           {error}
@@ -163,7 +196,7 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
       <Button
         type="submit"
         className="w-full bg-purple-600 hover:bg-purple-700 text-lg py-3 rounded-lg shadow-md"
-        disabled={!selectedFile || !message.trim()}
+        disabled={!selectedFile || !message.trim() || !userEmail.trim() || !isValidEmail(userEmail)}
       >
         Create My Dog's Birthday Card! <ArrowRight className="ml-2 h-5 w-5" />
       </Button>

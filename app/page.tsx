@@ -3,11 +3,11 @@
 // Main page component for Dog Birthday Card Generator
 import { useState, useEffect } from "react"
 import { Upload, MessageSquare, Gift, Sparkles, Cake, Music, MailCheck } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Card } from "@/components/ui/card"
-import UploadForm from "@/components/upload-form"
-import ProcessingStatus from "@/components/processing-status"
-import ResultDisplay from "@/components/result-display"
+import { Button } from "../components/ui/button"
+import { Card } from "../components/ui/card"
+import UploadForm from "../components/upload-form"
+import ProcessingStatus from "../components/processing-status"
+import ResultDisplay from "../components/result-display"
 
 export default function Home() {
   const [currentStep, setCurrentStep] = useState<"upload" | "processing" | "complete" | "failed">("upload")

@@ -4,10 +4,10 @@ import type React from "react"
 
 import { useState, useRef } from "react"
 import { Upload, X, Camera, Image, ArrowRight, MessageSquare, Mail } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
-import { Label } from "@/components/ui/label"
-import { Input } from "@/components/ui/input"
+import { Button } from "./ui/button"
+import { Textarea } from "./ui/textarea"
+import { Label } from "./ui/label"
+import { Input } from "./ui/input"
 
 interface UploadFormProps {
   onSubmit: (formData: FormData) => void

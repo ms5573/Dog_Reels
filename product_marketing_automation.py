@@ -9,6 +9,11 @@ import cloudinary
 import cloudinary.uploader
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
+import tempfile
+import redis
+import sys
+import traceback
+import json
 
 class ProductMarketingAutomation:
     def __init__(self, openai_api_key=None, imgbb_api_key=None, runway_api_key=None, cloudinary_cloud_name=None, cloudinary_api_key=None, cloudinary_api_secret=None, sendgrid_api_key=None):
@@ -276,7 +281,7 @@ class ProductMarketingAutomation:
             print(f"Error sending email: {e}")
             return False
 
-    def process_product(self, product_photo_path, product_title, product_description, user_email,
+    def process_product(self, product_photo_path, product_title, product_description, user_email=None,
                    upload_to_drive=False, folder_id=None): # Changed default to False
         """
         Process a product through the complete workflow:
@@ -367,15 +372,95 @@ class ProductMarketingAutomation:
         print(f"\n=== Processing complete for: {product_title} ===\n")
         return results
 
+    def run_worker(self):
+        """
+        Run as a worker process, listening to a Redis queue for tasks
+        """
+        print("Starting worker mode...")
+        
+        # Connect to Redis (using Heroku REDIS_URL if available)
+        redis_url = os.environ.get('REDIS_URL')
+        if not redis_url:
+            print("Error: REDIS_URL environment variable not set. Cannot run in worker mode.")
+            return
+        
+        try:
+            r = redis.from_url(redis_url, ssl_cert_reqs=None)
+            print(f"Connected to Redis at {redis_url}")
+            
+            # Define queue names
+            task_queue = 'dog_video_tasks'
+            result_queue = 'dog_video_results'
+            
+            print(f"Listening for tasks on queue: {task_queue}")
+            
+            while True:
+                try:
+                    # Check for new tasks with a timeout
+                    task_data = r.blpop(task_queue, timeout=10)
+                    
+                    if task_data is None:
+                        # No task was found, continue polling
+                        print("No tasks found. Waiting...")
+                        continue
+                    
+                    # Extract the task data
+                    _, task_json = task_data
+                    task = json.loads(task_json)
+                    
+                    task_id = task.get('task_id')
+                    photo_path = task.get('photo_path')
+                    title = task.get('product_title', 'Dog Birthday Card')
+                    description = task.get('product_description', 'A cute dog birthday card')
+                    email = task.get('email')
+                    
+                    print(f"Processing task {task_id}: {title} for {email}")
+                    
+                    # Process the task
+                    result = self.process_product(
+                        product_photo_path=photo_path,
+                        product_title=title,
+                        product_description=description,
+                        user_email=email
+                    )
+                    
+                    # Store the result in Redis
+                    result['task_id'] = task_id
+                    result['status'] = 'completed'
+                    r.rpush(result_queue, json.dumps(result))
+                    
+                    print(f"Task {task_id} completed successfully.")
+                    
+                except KeyboardInterrupt:
+                    print("Worker shutting down...")
+                    break
+                except Exception as e:
+                    print(f"Error processing task: {e}")
+                    traceback.print_exc()
+                    # Try to report the error, but continue processing other tasks
+                    try:
+                        error_data = {
+                            'task_id': task_id if 'task_id' in locals() else 'unknown',
+                            'status': 'error',
+                            'error': str(e)
+                        }
+                        r.rpush(result_queue, json.dumps(error_data))
+                    except:
+                        pass
+        
+        except Exception as e:
+            print(f"Fatal worker error: {e}")
+            traceback.print_exc()
+            sys.exit(1)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Automate product marketing material generation.")
-    parser.add_argument("photo_path", help="Path to the product photo (e.g., product_photo.jpg)")
-    parser.add_argument("product_title", help="Title of the product (e.g., 'Chibi Dog Illustration')")
-    parser.add_argument("product_description", help="Description of the product.")
-    parser.add_argument("--email", help="User's email address to send the final video link.", required=False) # Make email optional for now
-    parser.add_argument("--upload_to_drive", action='store_true', help="Upload original photo to Google Drive.")
-    parser.add_argument("--drive_folder_id", help="Google Drive folder ID to upload to.", default=None)
+    parser.add_argument("photo_path", help="Path to the product photo (e.g., product_photo.jpg)", nargs='?')
+    parser.add_argument("product_title", help="Title of the product (e.g., 'Chibi Dog Illustration')", nargs='?')
+    parser.add_argument("product_description", help="Description of the product.", nargs='?')
+    parser.add_argument("--email", help="User's email address to send the final video link.", required=False)
+    parser.add_argument("--worker", action='store_true', help="Run in worker mode, listening for tasks from Redis")
     
     args = parser.parse_args()
 
@@ -408,29 +493,35 @@ def main():
             sendgrid_api_key=config["sendgrid_api_key"]
         )
         
-        result = automation.process_product(
-            product_photo_path=args.photo_path,
-            product_title=args.product_title,
-            product_description=args.product_description,
-            user_email=args.email, 
-            upload_to_drive=args.upload_to_drive,
-            folder_id=args.drive_folder_id
-        )
-        
-        print("\n=== Final Results Summary ===")
-        if result.get("imgbb_image_url"):
-            print(f"Edited Image URL (ImgBB for Runway): {result['imgbb_image_url']}")
-        if result.get("runway_video_download_url"):
-             print(f"Runway Output Video URL (raw from Runway): {result['runway_video_download_url']}")
-        if result.get("cloudinary_video_url"):
-            print(f"Final Video URL (Cloudinary): {result['cloudinary_video_url']}")
+        if args.worker:
+            # Run in worker mode
+            automation.run_worker()
         else:
-            print("Final video URL (Cloudinary): Not generated or uploaded.")
-        
-        if args.email and result.get("cloudinary_video_url"):
-            print(f"An email with the video link should have been sent to {args.email}.")
-        elif args.email:
-            print(f"Email to {args.email} was not sent as Cloudinary URL was not available.")
+            # Run in CLI mode
+            if not args.photo_path or not args.product_title or not args.product_description:
+                parser.error("CLI mode requires photo_path, product_title, and product_description arguments")
+            
+            result = automation.process_product(
+                product_photo_path=args.photo_path,
+                product_title=args.product_title,
+                product_description=args.product_description,
+                user_email=args.email
+            )
+            
+            print("\n=== Final Results Summary ===")
+            if result.get("imgbb_image_url"):
+                print(f"Edited Image URL (ImgBB for Runway): {result['imgbb_image_url']}")
+            if result.get("runway_video_download_url"):
+                print(f"Runway Output Video URL (raw from Runway): {result['runway_video_download_url']}")
+            if result.get("cloudinary_video_url"):
+                print(f"Final Video URL (Cloudinary): {result['cloudinary_video_url']}")
+            else:
+                print("Final video URL (Cloudinary): Not generated or uploaded.")
+            
+            if args.email and result.get("cloudinary_video_url"):
+                print(f"An email with the video link should have been sent to {args.email}.")
+            elif args.email:
+                print(f"Email to {args.email} was not sent as Cloudinary URL was not available.")
 
     except Exception as e:
         print(f"Error in main automation execution: {e}")

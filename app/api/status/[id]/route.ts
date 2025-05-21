@@ -2,12 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(request: NextRequest) {
   try {
-    const taskId = params.id;
+    // Extract id from the URL
+    const url = new URL(request.url);
+    const id = url.pathname.split('/').pop();
+    
+    if (!id) {
+      return NextResponse.json(
+        { error: 'Task ID not provided' },
+        { status: 400 }
+      );
+    }
+    
+    const taskId = id;
     const outputDir = path.join(process.cwd(), 'Output');
     
     // Check if status file exists

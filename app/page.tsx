@@ -1,5 +1,6 @@
 "use client"
 
+// Main page component for Dog Birthday Card Generator
 import { useState, useEffect } from "react"
 import { Upload, MessageSquare, Gift, Sparkles, Cake, Music, MailCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"

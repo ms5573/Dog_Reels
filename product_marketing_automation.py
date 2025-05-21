@@ -90,9 +90,9 @@ class ProductMarketingAutomation:
             print(f"Error uploading to Cloudinary: {e}")
             return None
 
-    def edit_image_with_openai(self, image_content, prompt):
+    def edit_image_with_openai(self, image_content, prompt, max_retries=3, retry_delay=5):
         """
-        Use OpenAI's image editing API
+        Use OpenAI's image editing API with retry logic for handling temporary failures
         """
         print("Editing image with OpenAI")
         headers = {
@@ -107,19 +107,29 @@ class ProductMarketingAutomation:
         files = {
             'image': ('image.png', image_bytes, 'image/png'),
             'prompt': (None, prompt),
-            'model': (None, 'gpt-image-1') # Assuming this model is still desired/valid
+            'model': (None, 'gpt-image-1')
         }
         
-        try:
-            response = requests.post("https://api.openai.com/v1/images/edits", headers=headers, files=files)
-            response.raise_for_status()
-            print("Image successfully edited with OpenAI")
-            return response.json()["data"][0]["b64_json"]
-        except requests.exceptions.RequestException as e:
-            print(f"Error editing image: {e}")
-            if hasattr(e, 'response') and e.response and e.response.text:
-                print(f"Response error: {e.response.text}")
-            raise
+        for attempt in range(max_retries):
+            try:
+                print(f"OpenAI API attempt {attempt + 1}/{max_retries}")
+                response = requests.post("https://api.openai.com/v1/images/edits", headers=headers, files=files)
+                response.raise_for_status()
+                print("Image successfully edited with OpenAI")
+                return response.json()["data"][0]["b64_json"]
+            except requests.exceptions.RequestException as e:
+                print(f"Error on attempt {attempt + 1}: {e}")
+                if hasattr(e, 'response') and e.response and e.response.text:
+                    print(f"Response error: {e.response.text}")
+                
+                # Check if we should retry
+                if attempt < max_retries - 1:
+                    retry_seconds = retry_delay * (2 ** attempt)  # Exponential backoff
+                    print(f"Retrying in {retry_seconds} seconds...")
+                    time.sleep(retry_seconds)
+                else:
+                    print(f"Failed after {max_retries} attempts")
+                    raise
     
     def upload_to_imgbb(self, image_base64):
         """
@@ -198,34 +208,52 @@ class ProductMarketingAutomation:
             print(f"Error checking Runway task status: {e}")
             raise
     
-    def wait_for_runway_video(self, task_id, initial_wait=60, poll_interval=10, max_attempts=30): # Increased poll_interval and max_attempts
+    def wait_for_runway_video(self, task_id, initial_wait=60, poll_interval=10, max_attempts=30):
         """
-        Poll Runway API until video is ready, with configurable waits
+        Poll Runway API until video is ready, with configurable waits and error handling
         """
         print(f"Waiting {initial_wait} seconds before first Runway status check...")
         time.sleep(initial_wait)
         
         attempts = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+        
         while attempts < max_attempts:
             attempts += 1
-            print(f"Checking Runway video status (attempt {attempts}/{max_attempts})...")
-            
-            task_status = self.check_runway_task_status(task_id)
-            status = task_status.get("status")
-            
-            if status == "COMPLETED" or status == "SUCCEEDED": # Handle both success states
-                print(f"Runway video generation {status} after {attempts} checks!")
-                return task_status
-            elif status == "FAILED":
-                error_message = task_status.get('error', 'Unknown error')
-                print(f"Runway video generation failed: {error_message}")
-                raise Exception(f"Runway video generation failed: {error_message}")
-            elif status in ["RUNNING", "PENDING"]:
-                print(f"Runway video still generating (status: {status}). Waiting {poll_interval} seconds...")
-                time.sleep(poll_interval)
-            else: # Handle unexpected statuses
-                print(f"Runway video: Unknown status '{status}'. Raw: {task_status}. Waiting {poll_interval} seconds...")
-                time.sleep(poll_interval)
+            try:
+                print(f"Checking Runway video status (attempt {attempts}/{max_attempts})...")
+                
+                task_status = self.check_runway_task_status(task_id)
+                consecutive_errors = 0  # Reset error counter on successful API call
+                status = task_status.get("status")
+                
+                if status == "COMPLETED" or status == "SUCCEEDED": # Handle both success states
+                    print(f"Runway video generation {status} after {attempts} checks!")
+                    return task_status
+                elif status == "FAILED":
+                    error_message = task_status.get('error', 'Unknown error')
+                    print(f"Runway video generation failed: {error_message}")
+                    raise Exception(f"Runway video generation failed: {error_message}")
+                elif status in ["RUNNING", "PENDING"]:
+                    print(f"Runway video still generating (status: {status}). Waiting {poll_interval} seconds...")
+                    time.sleep(poll_interval)
+                else: # Handle unexpected statuses
+                    print(f"Runway video: Unknown status '{status}'. Raw: {task_status}. Waiting {poll_interval} seconds...")
+                    time.sleep(poll_interval)
+                    
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"Error checking Runway status (attempt {attempts}, consecutive errors: {consecutive_errors}): {e}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"Too many consecutive errors ({consecutive_errors}). Giving up.")
+                    raise Exception(f"Failed to check Runway video status after {consecutive_errors} consecutive errors")
+                    
+                # Use exponential backoff for retry delay
+                retry_seconds = poll_interval * (2 ** (consecutive_errors - 1))
+                print(f"Will retry in {retry_seconds} seconds...")
+                time.sleep(retry_seconds)
         
         print(f"Runway video generation timed out after {max_attempts} attempts.")
         raise Exception(f"Runway video generation timed out after {max_attempts} attempts")
@@ -308,8 +336,15 @@ class ProductMarketingAutomation:
         with open(product_photo_path, 'rb') as f:
             image_content_bytes = f.read() # Read as bytes
         
-        # Edit image with OpenAI (expects bytes or BytesIO)
-        edited_image_b64 = self.edit_image_with_openai(image_content_bytes, ai_prompt)
+        # Try to edit image with OpenAI (with retries)
+        edited_image_b64 = None
+        try:
+            edited_image_b64 = self.edit_image_with_openai(image_content_bytes, ai_prompt)
+        except Exception as e:
+            print(f"Failed to edit image with OpenAI after retries: {e}")
+            print("Using original image as fallback...")
+            # Convert original image to base64 as fallback
+            edited_image_b64 = base64.b64encode(image_content_bytes).decode('utf-8')
         
         # Upload edited image to ImgBB to get a URL for Runway
         # (Runway needs a URL for promptImage)

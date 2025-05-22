@@ -163,44 +163,58 @@ tasks = {}
 
 # Helper function to ensure Cloudinary is configured
 def ensure_cloudinary_configured():
-    if hasattr(ensure_cloudinary_configured, 'configured') and ensure_cloudinary_configured.configured:
+    if getattr(ensure_cloudinary_configured, "configured", False):
         # app.logger.info("Cloudinary already confirmed as configured.")
         return True
 
-    app.logger.info("Attempting EXPLICIT Cloudinary configuration with individual environment variables.")
+    app.logger.info("Attempting Cloudinary configuration using individual environment variables with hygiene tweaks.")
     
-    cloud_name = os.getenv('CLOUDINARY_CLOUD_NAME')
-    api_key = os.getenv('CLOUDINARY_API_KEY')
-    api_secret = os.getenv('CLOUDINARY_API_SECRET')
+    # Fetch with .strip() to remove accidental leading/trailing whitespace
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+    api_key    = os.getenv("CLOUDINARY_API_KEY", "").strip()
+    api_secret = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 
-    # Log presence and basic details (avoid logging the secret itself)
-    app.logger.info(f"CLOUDINARY_CLOUD_NAME found: {'Yes' if cloud_name else 'No'}")
-    app.logger.info(f"CLOUDINARY_API_KEY found: {'Yes' if api_key else 'No'}")
-    app.logger.info(f"CLOUDINARY_API_SECRET found: {'Yes' if api_secret else 'No'} (Length: {len(api_secret) if api_secret else 0})")
+    # Abort fast if any part is missing
+    missing_creds = []
+    if not cloud_name: missing_creds.append("CLOUDINARY_CLOUD_NAME")
+    if not api_key: missing_creds.append("CLOUDINARY_API_KEY")
+    if not api_secret: missing_creds.append("CLOUDINARY_API_SECRET")
 
-    if cloud_name and api_key and api_secret:
-        try:
-            cloudinary.config(
-                cloud_name=cloud_name,
-                api_key=api_key,
-                api_secret=api_secret,
-                secure=True
-            )
-            current_config = cloudinary.config()
-            if current_config.cloud_name == cloud_name:
-                app.logger.info(f"Cloudinary configured successfully using EXPLICIT variables. Cloud name: {current_config.cloud_name}")
-                ensure_cloudinary_configured.configured = True
-                return True
-            else:
-                app.logger.error("Cloudinary config() called with explicit variables, but verification of cloud_name failed. SDK might not have applied them.")
-                ensure_cloudinary_configured.configured = False
-                return False
-        except Exception as e:
-            app.logger.error(f"Error during EXPLICIT cloudinary.config() with individual variables: {e}")
+    if missing_creds:
+        app.logger.error(f"CRITICAL: Missing Cloudinary credentials after strip: {', '.join(missing_creds)}. Cannot configure Cloudinary.")
+        ensure_cloudinary_configured.configured = False
+        return False
+
+    app.logger.info(f"Found CLOUDINARY_CLOUD_NAME: '{cloud_name}'")
+    app.logger.info(f"Found CLOUDINARY_API_KEY: '{api_key}'")
+    app.logger.info(f"Found CLOUDINARY_API_SECRET: Present (Length: {len(api_secret)})")
+
+    # Clear any accidental CLOUDINARY_URL to prioritize explicit config
+    # This is crucial if CLOUDINARY_URL was set and might be malformed or conflicting
+    if "CLOUDINARY_URL" in os.environ:
+        original_cloudinary_url = os.environ.pop("CLOUDINARY_URL", None)
+        app.logger.warning(f"Temporarily removed CLOUDINARY_URL ('{original_cloudinary_url}') from os.environ to ensure explicit config takes precedence.")
+
+    try:
+        cloudinary.config(
+            cloud_name=cloud_name,
+            api_key=api_key,
+            api_secret=api_secret,
+            secure=True
+        )
+        current_config = cloudinary.config()
+        if current_config.cloud_name == cloud_name and current_config.api_key == api_key:
+            app.logger.info(f"Cloudinary configured successfully using EXPLICIT variables. Cloud name: '{current_config.cloud_name}', API Key: '{current_config.api_key}'")
+            ensure_cloudinary_configured.configured = True
+            return True
+        else:
+            app.logger.error("Cloudinary config() called with explicit variables, but verification failed. SDK might not have applied them correctly.")
+            app.logger.error(f"Configured cloud_name: {current_config.cloud_name}, Expected: {cloud_name}")
+            app.logger.error(f"Configured api_key: {current_config.api_key}, Expected: {api_key}")
             ensure_cloudinary_configured.configured = False
             return False
-    else:
-        app.logger.error("CRITICAL: Not all individual Cloudinary credentials (NAME, KEY, SECRET) were found. Cannot configure Cloudinary explicitly.")
+    except Exception as e:
+        app.logger.error(f"Error during EXPLICIT cloudinary.config() with individual variables: {e}", exc_info=True)
         ensure_cloudinary_configured.configured = False
         return False
 ensure_cloudinary_configured.configured = False # Initialize static variable
@@ -290,51 +304,56 @@ def generate_route(): # Renamed from generate to avoid conflict with module
     if not file or not allowed_file(file.filename):
         return jsonify({"error": "Invalid file type. Allowed: png, jpg, jpeg, gif"}), 400
 
-    # Generate a task ID
     task_id = str(uuid.uuid4())
-    
-    # Get parameters
     action = request.form.get("action", "birthday-dance")
     birthday_message = request.form.get("birthdayMessage", None)
     
-    # Handle birthday theme automation
     if action == "birthday-dance":
-        app.logger.info("Birthday theme selected - will use local storage and birthday song")
+        app.logger.info("Birthday theme selected")
     
-    permanent_path = None # Define to ensure it's available in finally block
+    permanent_path = None
     try:
-        # Create initial task status
         save_task_status(task_id, "PENDING", "Processing queued")
         
-        # Securely save the uploaded file to a temporary path for Cloudinary upload
         filename = secure_filename(file.filename)
         base, ext = os.path.splitext(filename)
         
         with tempfile.NamedTemporaryFile(delete=False, prefix=f"{base}_{task_id}_", suffix=ext) as tmp_file:
             file.save(tmp_file.name)
-            permanent_path = tmp_file.name # Use this temp path for upload
-            app.logger.info(f"Saved uploaded file to temporary path for Cloudinary: {permanent_path}")
+            permanent_path = tmp_file.name
+            app.logger.info(f"Saved uploaded file to temporary path: {permanent_path}")
 
-        # Attempt to configure Cloudinary before uploading
         if not ensure_cloudinary_configured():
             app.logger.error("Cloudinary is not configured. Cannot upload image.")
-            # Save status reflecting this
-            save_task_status(task_id, "FAILED", "Configuration error", 
-                            error="Cloud storage service is not configured on the server.")
+            save_task_status(task_id, "FAILED", "Configuration error", error="Cloud storage service is not configured on the server.")
             return jsonify({
                 "error": "Image storage service not configured",
-                "message": "Our image processing service is currently experiencing configuration issues. Please try again later."
+                "message": "Image processing service is experiencing configuration issues. Please try again later."
             }), 503
         
-        # Upload to Cloudinary
         cloudinary_url = None
         try:
             app.logger.info(f"Attempting to upload {permanent_path} to Cloudinary.")
+            
+            # Sanity Log before upload
+            upload_params_for_sig = {
+                "overwrite": True, # Note: boolean True, not string "1"
+                "public_id": f"dog_cards/{task_id}",
+                "timestamp": int(time.time())
+            }
+            # Ensure cloudinary.config() has been called and is valid before accessing api_secret
+            if cloudinary.config().api_secret:
+                expected_sig = cloudinary.utils.api_sign_request(upload_params_for_sig, cloudinary.config().api_secret)
+                app.logger.info(f"Sanity Check - Using cloud: '{cloudinary.config().cloud_name}', key: '{cloudinary.config().api_key}', timestamp: {upload_params_for_sig['timestamp']}, public_id: '{upload_params_for_sig['public_id']}', sig preview: '{expected_sig}'")
+            else:
+                app.logger.error("Sanity Check - Cannot generate signature preview: Cloudinary API secret not configured.")
+
             upload_result = cloudinary.uploader.upload(
                 permanent_path,
-                public_id=f"dog_cards/{task_id}", # Using task_id ensures a unique public_id
-                overwrite=True,
-                resource_type="image" # Explicitly set resource type
+                public_id=upload_params_for_sig["public_id"],
+                overwrite=upload_params_for_sig["overwrite"],
+                timestamp=str(upload_params_for_sig["timestamp"]), # Ensure timestamp is a string for the actual upload call if required by SDK
+                resource_type="image"
             )
             cloudinary_url = upload_result.get('secure_url')
             
@@ -346,69 +365,58 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 
         except Exception as cloud_error:
             app.logger.error(f"Cloudinary upload failed: {cloud_error}", exc_info=True)
-            # Save error in task status
-            save_task_status(task_id, "FAILED", "Cloudinary upload error", 
-                            error=f"Cloud storage upload failed: {str(cloud_error)}")
+            save_task_status(task_id, "FAILED", "Cloudinary upload error", error=f"Cloud storage upload failed: {str(cloud_error)}")
             return jsonify({
                 "error": "Failed to upload image to cloud storage",
-                "message": "Our image processing service is experiencing issues. Please try again later."
-            }), 500 # 500 for server-side cloud storage issue
+                "message": "Image processing service is experiencing issues. Please try again later."
+            }), 500
         
-        # Check if Redis is available first
         if not redis_client:
-            app.logger.error("Redis client is not available. Cannot add task to queue.")
-            save_task_status(task_id, "FAILED", "Redis connection error", 
-                            error="Could not connect to the task processing system. Please try again later.")
+            app.logger.error("Redis client not available. Cannot add task to queue.")
+            save_task_status(task_id, "FAILED", "Redis connection error", error="Could not connect to task processing system.")
             return jsonify({
                 "error": "Task processing system unavailable",
-                "message": "Our video generation service is currently experiencing issues. Please try again later.",
+                "message": "Video generation service is currently experiencing issues. Please try again later.",
                 "code": "REDIS_UNAVAILABLE"
             }), 503
             
-        # Add task to Redis queue with Cloudinary URL
         try:
-            redis_client.ping() # Test Redis connection
+            redis_client.ping()
             success = add_task_to_queue(task_id, cloudinary_url, birthday_message)
-            
             if not success:
-                # add_task_to_queue already saves FAILED status, so just return
                 return jsonify({
                     "error": "Failed to queue task for processing", 
-                    "message": "Your request could not be added to the processing queue. Please try again."
+                    "message": "Request could not be added to the processing queue. Please try again."
                 }), 500
-            
-            # Return task ID for status polling
             return jsonify({
                 "task_id": task_id,
                 "status": "QUEUED",
-                "message": "Your request has been queued for processing. Please check status endpoint."
+                "message": "Request has been queued. Please check status endpoint."
             })
         except redis.exceptions.ConnectionError as e:
             app.logger.error(f"Redis connection error when queueing task: {e}")
             save_task_status(task_id, "FAILED", "Redis connection failed", error=str(e))
             return jsonify({
                 "error": "Connection to processing service failed",
-                "message": "We encountered an issue connecting to our video processing service. Please try again later."
+                "message": "We encountered an issue connecting to our video processing service."
             }), 503
-        except redis.exceptions.RedisError as e: # Catch other Redis errors
+        except redis.exceptions.RedisError as e:
             app.logger.error(f"Redis error when queueing task: {e}")
             save_task_status(task_id, "FAILED", "Redis operation failed", error=str(e))
             return jsonify({
                 "error": "Processing service error",
-                "message": "An error occurred in our video processing service. Please try again later."
+                "message": "An error occurred in our video processing service."
             }), 500
         
     except Exception as e:
         app.logger.error(f"Error in /generate endpoint: {e}", exc_info=True)
-        # Ensure a task status is saved if an ID was generated
         if 'task_id' in locals() and task_id:
              save_task_status(task_id, "FAILED", "Unhandled server error", error=str(e))
         return jsonify({
-            "error": str(e), # It's often better to return a generic error to the client
+            "error": "An unexpected server error occurred.",
             "details": "An unexpected error occurred while processing your request. Please try again later."
         }), 500
     finally:
-        # Clean up the temporary file from local storage after Cloudinary upload attempt
         if permanent_path and os.path.exists(permanent_path):
             try:
                 os.remove(permanent_path)

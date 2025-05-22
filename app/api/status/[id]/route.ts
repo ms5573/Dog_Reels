@@ -49,7 +49,15 @@ export async function GET(request: NextRequest) {
         // Connect to Redis
         const redisUrl = process.env.REDIS_URL;
         if (redisUrl) {
-          const redis = createClient({ url: redisUrl });
+          // Handle SSL certificates for Heroku Redis
+          const redisConfig: any = { url: redisUrl };
+          if (redisUrl.startsWith('rediss://')) {
+            redisConfig.socket = {
+              rejectUnauthorized: false
+            };
+          }
+          
+          const redis = createClient(redisConfig);
           await redis.connect();
           
           // Check for results in the results queue

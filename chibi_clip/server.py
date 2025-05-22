@@ -164,59 +164,38 @@ tasks = {}
 # Helper function to ensure Cloudinary is configured
 def ensure_cloudinary_configured():
     if hasattr(ensure_cloudinary_configured, 'configured') and ensure_cloudinary_configured.configured:
-        app.logger.info("Cloudinary already configured.")
+        # app.logger.info("Cloudinary already confirmed as configured.") # Less verbose for subsequent calls
         return True
 
-    cloudinary_url = os.getenv('CLOUDINARY_URL')
-    if cloudinary_url:
-        app.logger.info(f"CLOUDINARY_URL found. Attempting configuration.")
+    cloudinary_url_env = os.getenv('CLOUDINARY_URL')
+    if cloudinary_url_env:
+        app.logger.info(f"CLOUDINARY_URL found in environment. Attempting Cloudinary configuration.")
         try:
-            # The SDK will use CLOUDINARY_URL automatically
-            # We call config() just to set other defaults like secure=True if needed
-            # or to verify it.
-            cloudinary.config(secure=True) 
+            # The SDK should automatically use CLOUDINARY_URL.
+            # Calling config() can be used to set other parameters or verify.
+            # We explicitly pass secure=True as a best practice.
+            cloudinary.config(secure=True)
             
-            # Verify by checking if cloud_name is set
-            if cloudinary.config().cloud_name:
-                app.logger.info(f"Cloudinary configured successfully using CLOUDINARY_URL. Cloud name: {cloudinary.config().cloud_name}")
+            # Verify by checking if cloud_name is populated after config call
+            # This implies the CLOUDINARY_URL was parsed and used by the SDK.
+            current_config = cloudinary.config()
+            if current_config.cloud_name:
+                app.logger.info(f"Cloudinary configured successfully via CLOUDINARY_URL. Cloud name: {current_config.cloud_name}")
                 ensure_cloudinary_configured.configured = True
                 return True
             else:
-                app.logger.error("Cloudinary config() called but cloud_name is not set. CLOUDINARY_URL might be malformed or SDK issue.")
+                app.logger.error("Cloudinary config() called, but cloud_name is not populated. CLOUDINARY_URL might be malformed, empty, or SDK not picking it up.")
                 ensure_cloudinary_configured.configured = False
                 return False
         except Exception as e:
-            app.logger.error(f"Error configuring Cloudinary with CLOUDINARY_URL: {e}")
+            app.logger.error(f"Error during cloudinary.config() with CLOUDINARY_URL: {e}")
             ensure_cloudinary_configured.configured = False
             return False
     else:
-        app.logger.warning("CLOUDINARY_URL not found in environment variables. Cloudinary uploads will fail.")
-        # Fallback to individual variables if CLOUDINARY_URL is not present
-        # (This is a less preferred method and should ideally not be used if CLOUDINARY_URL is standard)
-        app.logger.info("Attempting Cloudinary configuration with individual variables as fallback...")
-        cloudinary_cloud_name = os.getenv('CLOUDINARY_CLOUD_NAME')
-        cloudinary_api_key = os.getenv('CLOUDINARY_API_KEY')
-        cloudinary_api_secret = os.getenv('CLOUDINARY_API_SECRET')
-        if cloudinary_cloud_name and cloudinary_api_key and cloudinary_api_secret:
-            try:
-                cloudinary.config(
-                    cloud_name=cloudinary_cloud_name,
-                    api_key=cloudinary_api_key,
-                    api_secret=cloudinary_api_secret,
-                    secure=True
-                )
-                app.logger.info(f"Cloudinary configured successfully using individual variables. Cloud name: {cloudinary_cloud_name}")
-                ensure_cloudinary_configured.configured = True
-                return True
-            except Exception as e:
-                app.logger.error(f"Error configuring Cloudinary with individual variables: {e}")
-                ensure_cloudinary_configured.configured = False
-                return False
-        else:
-            app.logger.error("Cloudinary individual credentials (NAME, KEY, SECRET) not fully set. Cannot configure Cloudinary.")
-            ensure_cloudinary_configured.configured = False
-            return False
-ensure_cloudinary_configured.configured = False # Initialize static variable for memoization
+        app.logger.error("CRITICAL: CLOUDINARY_URL not found in environment variables. Cloudinary uploads will fail. Please set this Heroku config var.")
+        ensure_cloudinary_configured.configured = False
+        return False
+ensure_cloudinary_configured.configured = False # Initialize static variable
 
 # Helper function to save task status
 def save_task_status(task_id, status, stage="Queued", result_url=None, error=None):

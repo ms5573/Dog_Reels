@@ -417,24 +417,18 @@ class ProductMarketingAutomation:
             if CHIBI_GENERATOR_AVAILABLE and self.chibi_generator_initialized_successfully and product_title == "Dog Birthday Card":
                 logger.info("Using ChibiClipGenerator for Dog Birthday Card.")
                 
-                # ChibiClipGenerator's process_clip expects a photo_path and birthday_message.
-                # It handles OpenAI editing, Runway animation, music, looping, and card slate internally.
                 chibi_result = self.chibi_generator.process_clip(
                     photo_path=current_image_path,
-                    action="birthday-dance", # Hardcoded for this flow
-                    birthday_message=product_description, # User's message
-                    # extended_duration=45 # This is default in process_clip for birthday-dance
-                    # use_local_storage=True # process_clip handles its own local storage via output_dir
+                    action="birthday-dance",
+                    birthday_message=product_description,
                 )
                 
-                if not chibi_result or not chibi_result.get('final_video_path'):
-                    raise Exception("ChibiClipGenerator did not return the final video path.")
+                if not chibi_result or not chibi_result.get('local_video_path'):
+                    raise Exception("ChibiClipGenerator did not return the 'local_video_path'.")
                 
-                final_video_local_path = chibi_result['final_video_path']
-                results["chibi_generator_result"] = chibi_result # Store intermediate results if any
+                final_video_local_path = chibi_result['local_video_path']
+                results["chibi_generator_result"] = chibi_result
                 logger.info(f"ChibiClipGenerator processing complete. Final video at: {final_video_local_path}")
-                # Note: ChibiClipGenerator saves to its own output_dir (self.output_dir_worker)
-                # We don't assign chibi_temp_dir_to_clean here as self.output_dir_worker is cleaned up at __init__ failure or could be cleaned later.
 
             else:
                 logger.info("Using generic product marketing video flow.")

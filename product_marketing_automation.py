@@ -13,7 +13,11 @@ import tempfile
 import redis
 import sys
 import traceback
-import json
+import logging # Import standard logging
+
+# Configure logging for the worker
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class ProductMarketingAutomation:
     def __init__(self, openai_api_key=None, imgbb_api_key=None, runway_api_key=None, cloudinary_cloud_name=None, cloudinary_api_key=None, cloudinary_api_secret=None, sendgrid_api_key=None):
@@ -314,38 +318,28 @@ class ProductMarketingAutomation:
         Download an image from a URL and return the content as bytes
         """
         try:
-            print(f"Processing image from URL: {image_url}")
-            
-            # Handle file:// protocol URLs (fallback from Cloudinary)
-            if image_url.startswith('file://'):
-                file_path = image_url[7:]  # Remove file:// prefix
-                print(f"Using local file fallback path: {file_path}")
-                
-                # Check if file exists
-                if not os.path.exists(file_path):
-                    print(f"WARNING: Local file not found: {file_path}")
-                    raise FileNotFoundError(f"Local file not found: {file_path}")
-                
-                # No need to download, just return the path
-                return file_path
-            
-            # Regular URL handling
-            print(f"Downloading image from remote URL: {image_url}")
+            logger.info(f"Downloading image from remote URL: {image_url}")
             response = requests.get(image_url, stream=True)
             response.raise_for_status()  # Raise an exception for HTTP errors
             
             # Create a temporary file to save the image
-            temp_image_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+            # Suffix helps identify file type but isn't strictly necessary for tempfile
+            temp_image_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") 
             temp_path = temp_image_file.name
             
             with open(temp_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             
-            print(f"Image downloaded to temporary path: {temp_path}")
+            logger.info(f"Image downloaded to temporary path: {temp_path}")
             return temp_path
-        except Exception as e:
-            print(f"Error downloading image from URL: {e}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error downloading image from URL {image_url}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}, Response text: {e.response.text}")
+            raise
+        except Exception as e: # Catch other potential errors
+            logger.error(f"Unexpected error downloading image from URL {image_url}: {e}")
             raise
 
     def process_product(self, product_photo_path, product_title, product_description, user_email=None,

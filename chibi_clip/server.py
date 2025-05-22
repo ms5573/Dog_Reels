@@ -161,6 +161,63 @@ print(f"Task directory for status files: {TASKS_DIR}")
 # Dictionary to store task data in memory while processing
 tasks = {}
 
+# Helper function to ensure Cloudinary is configured
+def ensure_cloudinary_configured():
+    if hasattr(ensure_cloudinary_configured, 'configured') and ensure_cloudinary_configured.configured:
+        app.logger.info("Cloudinary already configured.")
+        return True
+
+    cloudinary_url = os.getenv('CLOUDINARY_URL')
+    if cloudinary_url:
+        app.logger.info(f"CLOUDINARY_URL found. Attempting configuration.")
+        try:
+            # The SDK will use CLOUDINARY_URL automatically
+            # We call config() just to set other defaults like secure=True if needed
+            # or to verify it.
+            cloudinary.config(secure=True) 
+            
+            # Verify by checking if cloud_name is set
+            if cloudinary.config().cloud_name:
+                app.logger.info(f"Cloudinary configured successfully using CLOUDINARY_URL. Cloud name: {cloudinary.config().cloud_name}")
+                ensure_cloudinary_configured.configured = True
+                return True
+            else:
+                app.logger.error("Cloudinary config() called but cloud_name is not set. CLOUDINARY_URL might be malformed or SDK issue.")
+                ensure_cloudinary_configured.configured = False
+                return False
+        except Exception as e:
+            app.logger.error(f"Error configuring Cloudinary with CLOUDINARY_URL: {e}")
+            ensure_cloudinary_configured.configured = False
+            return False
+    else:
+        app.logger.warning("CLOUDINARY_URL not found in environment variables. Cloudinary uploads will fail.")
+        # Fallback to individual variables if CLOUDINARY_URL is not present
+        # (This is a less preferred method and should ideally not be used if CLOUDINARY_URL is standard)
+        app.logger.info("Attempting Cloudinary configuration with individual variables as fallback...")
+        cloudinary_cloud_name = os.getenv('CLOUDINARY_CLOUD_NAME')
+        cloudinary_api_key = os.getenv('CLOUDINARY_API_KEY')
+        cloudinary_api_secret = os.getenv('CLOUDINARY_API_SECRET')
+        if cloudinary_cloud_name and cloudinary_api_key and cloudinary_api_secret:
+            try:
+                cloudinary.config(
+                    cloud_name=cloudinary_cloud_name,
+                    api_key=cloudinary_api_key,
+                    api_secret=cloudinary_api_secret,
+                    secure=True
+                )
+                app.logger.info(f"Cloudinary configured successfully using individual variables. Cloud name: {cloudinary_cloud_name}")
+                ensure_cloudinary_configured.configured = True
+                return True
+            except Exception as e:
+                app.logger.error(f"Error configuring Cloudinary with individual variables: {e}")
+                ensure_cloudinary_configured.configured = False
+                return False
+        else:
+            app.logger.error("Cloudinary individual credentials (NAME, KEY, SECRET) not fully set. Cannot configure Cloudinary.")
+            ensure_cloudinary_configured.configured = False
+            return False
+ensure_cloudinary_configured.configured = False # Initialize static variable for memoization
+
 # Helper function to save task status
 def save_task_status(task_id, status, stage="Queued", result_url=None, error=None):
     task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
@@ -187,22 +244,6 @@ def save_task_status(task_id, status, stage="Queued", result_url=None, error=Non
         app.logger.error(f"Error saving task status to file: {e}")
     
     return data
-
-# Initialize Cloudinary
-cloudinary_cloud_name = os.getenv('CLOUDINARY_CLOUD_NAME')
-cloudinary_api_key = os.getenv('CLOUDINARY_API_KEY')
-cloudinary_api_secret = os.getenv('CLOUDINARY_API_SECRET')
-
-if cloudinary_cloud_name and cloudinary_api_key and cloudinary_api_secret:
-    cloudinary.config( 
-        cloud_name = cloudinary_cloud_name, 
-        api_key = cloudinary_api_key, 
-        api_secret = cloudinary_api_secret,
-        secure = True
-    )
-    print("Cloudinary configured successfully for server.")
-else:
-    print("WARNING: Cloudinary credentials not fully set. File uploads will fail.")
 
 # Function to add a task to Redis queue for processing by worker
 def add_task_to_queue(task_id, photo_url, birthday_message=None):
@@ -273,57 +314,62 @@ def generate_route(): # Renamed from generate to avoid conflict with module
     if action == "birthday-dance":
         app.logger.info("Birthday theme selected - will use local storage and birthday song")
     
+    permanent_path = None # Define to ensure it's available in finally block
     try:
         # Create initial task status
         save_task_status(task_id, "PENDING", "Processing queued")
         
-        # Upload to Cloudinary first instead of saving locally
-        # We still save locally as a backup, but the primary path is Cloudinary
+        # Securely save the uploaded file to a temporary path for Cloudinary upload
         filename = secure_filename(file.filename)
         base, ext = os.path.splitext(filename)
-        permanent_filename = f"{base}_{task_id}{ext}"
-        permanent_path = os.path.join(OUTPUT_DIR, permanent_filename)
         
-        # Save uploaded file locally as backup
-        file.save(permanent_path)
-        app.logger.info(f"Saved uploaded file to local backup: {permanent_path}")
+        with tempfile.NamedTemporaryFile(delete=False, prefix=f"{base}_{task_id}_", suffix=ext) as tmp_file:
+            file.save(tmp_file.name)
+            permanent_path = tmp_file.name # Use this temp path for upload
+            app.logger.info(f"Saved uploaded file to temporary path for Cloudinary: {permanent_path}")
+
+        # Attempt to configure Cloudinary before uploading
+        if not ensure_cloudinary_configured():
+            app.logger.error("Cloudinary is not configured. Cannot upload image.")
+            # Save status reflecting this
+            save_task_status(task_id, "FAILED", "Configuration error", 
+                            error="Cloud storage service is not configured on the server.")
+            return jsonify({
+                "error": "Image storage service not configured",
+                "message": "Our image processing service is currently experiencing configuration issues. Please try again later."
+            }), 503
         
         # Upload to Cloudinary
         cloudinary_url = None
         try:
-            # First verify Cloudinary is properly configured
-            if not (cloudinary_cloud_name and cloudinary_api_key and cloudinary_api_secret):
-                raise Exception("Cloudinary credentials are not properly configured")
-            
-            # Always use a unique public_id based on task_id to prevent conflicts
+            app.logger.info(f"Attempting to upload {permanent_path} to Cloudinary.")
             upload_result = cloudinary.uploader.upload(
                 permanent_path,
-                public_id=f"dog_cards/{task_id}",
+                public_id=f"dog_cards/{task_id}", # Using task_id ensures a unique public_id
                 overwrite=True,
-                resource_type="image"
+                resource_type="image" # Explicitly set resource type
             )
             cloudinary_url = upload_result.get('secure_url')
-            app.logger.info(f"Uploaded image to Cloudinary: {cloudinary_url}")
             
             if not cloudinary_url:
-                raise Exception("Cloudinary upload succeeded but no URL was returned")
+                app.logger.error("Cloudinary upload succeeded but no secure_url was returned.")
+                raise Exception("Cloudinary upload failed: No secure_url returned.")
+                
+            app.logger.info(f"Uploaded image to Cloudinary: {cloudinary_url}")
                 
         except Exception as cloud_error:
-            app.logger.error(f"Cloudinary upload failed: {cloud_error}")
-            
-            # Use local file path as fallback
-            # This won't work across dynos but we'll let the worker handle the error gracefully
-            app.logger.warning("Using local file path as fallback - Note: This may not work across dynos")
-            cloudinary_url = f"file://{permanent_path}"
-            
+            app.logger.error(f"Cloudinary upload failed: {cloud_error}", exc_info=True)
             # Save error in task status
-            save_task_status(task_id, "WARNING", "Cloudinary upload failed, using local path", 
+            save_task_status(task_id, "FAILED", "Cloudinary upload error", 
                             error=f"Cloud storage upload failed: {str(cloud_error)}")
+            return jsonify({
+                "error": "Failed to upload image to cloud storage",
+                "message": "Our image processing service is experiencing issues. Please try again later."
+            }), 500 # 500 for server-side cloud storage issue
         
         # Check if Redis is available first
         if not redis_client:
             app.logger.error("Redis client is not available. Cannot add task to queue.")
-            # Save status for debugging
             save_task_status(task_id, "FAILED", "Redis connection error", 
                             error="Could not connect to the task processing system. Please try again later.")
             return jsonify({
@@ -332,13 +378,13 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 "code": "REDIS_UNAVAILABLE"
             }), 503
             
-        # Add task to Redis queue with Cloudinary URL instead of local path
+        # Add task to Redis queue with Cloudinary URL
         try:
-            # Test Redis connection before attempting to queue
-            redis_client.ping()
+            redis_client.ping() # Test Redis connection
             success = add_task_to_queue(task_id, cloudinary_url, birthday_message)
             
             if not success:
+                # add_task_to_queue already saves FAILED status, so just return
                 return jsonify({
                     "error": "Failed to queue task for processing", 
                     "message": "Your request could not be added to the processing queue. Please try again."
@@ -357,7 +403,7 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 "error": "Connection to processing service failed",
                 "message": "We encountered an issue connecting to our video processing service. Please try again later."
             }), 503
-        except redis.exceptions.RedisError as e:
+        except redis.exceptions.RedisError as e: # Catch other Redis errors
             app.logger.error(f"Redis error when queueing task: {e}")
             save_task_status(task_id, "FAILED", "Redis operation failed", error=str(e))
             return jsonify({
@@ -367,10 +413,21 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         
     except Exception as e:
         app.logger.error(f"Error in /generate endpoint: {e}", exc_info=True)
+        # Ensure a task status is saved if an ID was generated
+        if 'task_id' in locals() and task_id:
+             save_task_status(task_id, "FAILED", "Unhandled server error", error=str(e))
         return jsonify({
-            "error": str(e),
-            "details": "An error occurred while processing your request"
+            "error": str(e), # It's often better to return a generic error to the client
+            "details": "An unexpected error occurred while processing your request. Please try again later."
         }), 500
+    finally:
+        # Clean up the temporary file from local storage after Cloudinary upload attempt
+        if permanent_path and os.path.exists(permanent_path):
+            try:
+                os.remove(permanent_path)
+                app.logger.info(f"Cleaned up temporary file: {permanent_path}")
+            except Exception as e_clean:
+                app.logger.error(f"Error cleaning up temp file {permanent_path}: {e_clean}")
 
 # Route to check task status
 @app.route('/task/<task_id>', methods=['GET'])

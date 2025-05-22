@@ -15,6 +15,15 @@ import sys
 import traceback
 import logging # Import standard logging
 
+# Attempt to import ChibiClipGenerator
+try:
+    from chibi_clip.chibi_clip import ChibiClipGenerator
+    CHIBI_GENERATOR_AVAILABLE = True
+    logging.info("Successfully imported ChibiClipGenerator.")
+except ImportError as e:
+    CHIBI_GENERATOR_AVAILABLE = False
+    logging.error(f"Failed to import ChibiClipGenerator: {e}. Birthday card functionality will be limited.")
+
 # Configure logging for the worker
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -37,31 +46,67 @@ class ProductMarketingAutomation:
         # Check for required credentials
         if not self.openai_api_key:
             raise ValueError("OpenAI API key is required")
-        # ImgBB is now optional if Cloudinary is primary for final video
-        # if not self.imgbb_api_key:
-        #     raise ValueError("ImgBB API key is required")
         if not self.runway_api_key:
             raise ValueError("Runway API key is required")
+        
         if not (self.cloudinary_cloud_name and self.cloudinary_api_key and self.cloudinary_api_secret):
-            print("Cloudinary credentials not fully set. Video upload to Cloudinary will be disabled.")
+            logger.warning("Cloudinary credentials not fully set. Video upload to Cloudinary will be disabled.")
             self.cloudinary_enabled = False
         else:
             self.cloudinary_enabled = True
-            cloudinary.config( 
-                cloud_name = self.cloudinary_cloud_name, 
-                api_key = self.cloudinary_api_key, 
-                api_secret = self.cloudinary_api_secret,
-                secure = True
-            )
-            print("Cloudinary configured.")
+            # Ensure Cloudinary config is robust, consider CLOUDINARY_URL first if available
+            try:
+                cloudinary_url = os.getenv('CLOUDINARY_URL')
+                if cloudinary_url:
+                    logger.info("Configuring Cloudinary using CLOUDINARY_URL.")
+                    cloudinary.config(cloudinary_url=cloudinary_url, secure=True)
+                else:
+                    logger.info("CLOUDINARY_URL not found, configuring Cloudinary using individual variables.")
+                    cloudinary.config( 
+                        cloud_name = self.cloudinary_cloud_name, 
+                        api_key = self.cloudinary_api_key, 
+                        api_secret = self.cloudinary_api_secret,
+                        secure = True
+                    )
+                logger.info(f"Cloudinary configured. Cloud name: {cloudinary.config().cloud_name}")
+            except Exception as e:
+                logger.error(f"Error configuring Cloudinary: {e}")
+                self.cloudinary_enabled = False
+
 
         if not self.sendgrid_api_key:
-            print("SendGrid API key not set. Email notifications will be disabled.")
+            logger.warning("SendGrid API key not set. Email notifications will be disabled.")
             self.sendgrid_enabled = False
         else:
             self.sendgrid_enabled = True
-            print("SendGrid configured.")
+            logger.info("SendGrid configured.")
         
+        # Initialize ChibiClipGenerator if available
+        self.chibi_generator = None
+        self.output_dir_worker = None
+        if CHIBI_GENERATOR_AVAILABLE:
+            try:
+                self.output_dir_worker = tempfile.mkdtemp(prefix="chibi_worker_")
+                self.chibi_generator = ChibiClipGenerator(
+                    openai_api_key=self.openai_api_key,
+                    imgbb_api_key=self.imgbb_api_key, 
+                    runway_api_key=self.runway_api_key,
+                    verbose=True, 
+                    output_dir=self.output_dir_worker
+                )
+                logger.info(f"ChibiClipGenerator initialized successfully in {self.output_dir_worker}")
+            except Exception as e:
+                logger.error(f"Error initializing ChibiClipGenerator: {e}. Birthday card features may not work.")
+                CHIBI_GENERATOR_AVAILABLE = False # Ensure this is set if init fails
+                if self.output_dir_worker and os.path.exists(self.output_dir_worker):
+                    # Clean up temp dir if generator init failed
+                    try:
+                        import shutil
+                        shutil.rmtree(self.output_dir_worker)
+                    except Exception as e_clean:
+                        logger.error(f"Error cleaning up worker temp dir after ChibiClipGenerator init failure: {e_clean}")
+                self.output_dir_worker = None # Reset so it's not used later
+
     def generate_ai_prompt(self, product_title, product_description):
         """
         Generate creative prompt using OpenAI - now returns a fixed style prompt.
@@ -343,203 +388,235 @@ class ProductMarketingAutomation:
             raise
 
     def process_product(self, product_photo_path, product_title, product_description, user_email=None,
-                   upload_to_drive=False, folder_id=None, is_url=False): # Added is_url parameter
+                   upload_to_drive=False, folder_id=None, is_url=False):
         """
-        Process a product through the complete workflow:
-        1. Generate AI prompt
-        2. Edit the product image
-        3. Upload edited image
-        4. Create Runway video
-        5. Upload final video to Cloudinary
-        6. Send email with Cloudinary link
-        7. Return the video URL
+        Process a product through the complete workflow.
+        If CHIBI_GENERATOR_AVAILABLE and product_title is "Dog Birthday Card", uses ChibiClipGenerator.
+        Otherwise, uses a generic product marketing video flow.
         """
-        print(f"\n=== Starting process for: {product_title} for user {user_email} ===\n")
-        results = {
-            "product_title": product_title,
-        }
-        
-        # Generate AI prompt for image editing
-        ai_prompt = self.generate_ai_prompt(product_title, product_description)
-        results["ai_prompt"] = ai_prompt
-        print(f"Generated AI editing prompt: {ai_prompt[:100]}...")
-        
-        # Load image content
-        temp_file_path = None
+        logger.info(f"\n=== Starting process for: '{product_title}' for user '{user_email}' (URL: {is_url}) ===\n")
+        results = {"product_title": product_title}
+        temp_downloaded_image_path = None # Path for image downloaded from URL
+        final_video_local_path = None # Path for the final video to be uploaded
+        chibi_temp_dir_to_clean = None # For ChibiGenerator's specific temp output, if different
+
         try:
-            # If product_photo_path is a URL, download it first
+            # Step 1: Get local image path (download if URL, or use directly if local path)
             if is_url:
-                temp_file_path = self.download_image_from_url(product_photo_path)
-                # Now use the temp file path as the source
-                with open(temp_file_path, 'rb') as f:
-                    image_content_bytes = f.read()
+                temp_downloaded_image_path = self.download_image_from_url(product_photo_path)
+                current_image_path = temp_downloaded_image_path
             else:
-                # For simplicity, assuming product_photo_path is a local file path
-                with open(product_photo_path, 'rb') as f:
-                    image_content_bytes = f.read() # Read as bytes
+                current_image_path = product_photo_path # Assuming it's a local path already
             
-            # Try to edit image with OpenAI (with retries)
-            edited_image_b64 = None
-            try:
-                edited_image_b64 = self.edit_image_with_openai(image_content_bytes, ai_prompt)
-            except Exception as e:
-                print(f"Failed to edit image with OpenAI after retries: {e}")
-                print("Using original image as fallback...")
-                # Convert original image to base64 as fallback
-                edited_image_b64 = base64.b64encode(image_content_bytes).decode('utf-8')
-            
-            # Upload edited image to ImgBB to get a URL for Runway
-            # (Runway needs a URL for promptImage)
-            img_url_for_runway = self.upload_to_imgbb(edited_image_b64)
-            if not img_url_for_runway:
-                print("Failed to upload image to ImgBB. Cannot proceed with Runway video generation.")
-                raise Exception("Failed to get image URL for Runway input.")
-            results["imgbb_image_url"] = img_url_for_runway
-            
-            # Generate video with Runway
-            runway_task_id = self.generate_runway_video(img_url_for_runway)
-            
-            # Wait for Runway video to complete
-            runway_video_result = self.wait_for_runway_video(runway_task_id)
-            # Assuming the first output is always the desired video MP4
-            runway_output_video_url = runway_video_result["output"][0] 
-            results["runway_video_download_url"] = runway_output_video_url
-            
-            # Download the Runway video locally to then upload to Cloudinary
-            local_runway_video_path = None
-            try:
-                print(f"Downloading Runway video from: {runway_output_video_url}")
+            if not current_image_path or not os.path.exists(current_image_path):
+                raise FileNotFoundError(f"Source image path not found or invalid: {current_image_path}")
+
+            # Check if we should use the specialized Dog Birthday Card flow
+            if CHIBI_GENERATOR_AVAILABLE and self.chibi_generator and product_title == "Dog Birthday Card":
+                logger.info("Using ChibiClipGenerator for Dog Birthday Card.")
+                
+                # ChibiClipGenerator's process_clip expects a photo_path and birthday_message.
+                # It handles OpenAI editing, Runway animation, music, looping, and card slate internally.
+                chibi_result = self.chibi_generator.process_clip(
+                    photo_path=current_image_path,
+                    action="birthday-dance", # Hardcoded for this flow
+                    birthday_message=product_description, # User's message
+                    # extended_duration=45 # This is default in process_clip for birthday-dance
+                    # use_local_storage=True # process_clip handles its own local storage via output_dir
+                )
+                
+                if not chibi_result or not chibi_result.get('final_video_path'):
+                    raise Exception("ChibiClipGenerator did not return the final video path.")
+                
+                final_video_local_path = chibi_result['final_video_path']
+                results["chibi_generator_result"] = chibi_result # Store intermediate results if any
+                logger.info(f"ChibiClipGenerator processing complete. Final video at: {final_video_local_path}")
+                # Note: ChibiClipGenerator saves to its own output_dir (self.output_dir_worker)
+                # We don't assign chibi_temp_dir_to_clean here as self.output_dir_worker is cleaned up at __init__ failure or could be cleaned later.
+
+            else:
+                logger.info("Using generic product marketing video flow.")
+                if not CHIBI_GENERATOR_AVAILABLE or not self.chibi_generator:
+                    logger.warning("ChibiClipGenerator was not available or not initialized. Dog Birthday Card will be generic.")
+
+                # Generic Flow (Original logic)
+                ai_prompt = self.generate_ai_prompt(product_title, product_description)
+                results["ai_prompt"] = ai_prompt
+                logger.info(f"Generated AI editing prompt: {ai_prompt[:100]}...")
+
+                with open(current_image_path, 'rb') as f:
+                    image_content_bytes = f.read()
+                
+                edited_image_b64 = None
+                try:
+                    edited_image_b64 = self.edit_image_with_openai(image_content_bytes, ai_prompt)
+                except Exception as e:
+                    logger.error(f"Failed to edit image with OpenAI after retries: {e}")
+                    logger.warning("Using original image as fallback for generic flow...")
+                    edited_image_b64 = base64.b64encode(image_content_bytes).decode('utf-8')
+                
+                img_url_for_runway = self.upload_to_imgbb(edited_image_b64)
+                if not img_url_for_runway:
+                    raise Exception("Failed to get image URL from ImgBB for Runway input in generic flow.")
+                results["imgbb_image_url"] = img_url_for_runway
+                
+                runway_task_id = self.generate_runway_video(img_url_for_runway)
+                runway_video_result = self.wait_for_runway_video(runway_task_id)
+                runway_output_video_url = runway_video_result["output"][0]
+                results["runway_video_download_url"] = runway_output_video_url
+                
+                # Download the Runway video to a temporary local path for Cloudinary upload
+                logger.info(f"Downloading Runway video (generic flow) from: {runway_output_video_url}")
                 video_response = requests.get(runway_output_video_url, stream=True)
                 video_response.raise_for_status()
                 
-                # Create a temporary file to save the video
-                temp_video_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                local_runway_video_path = temp_video_file.name
-                with open(local_runway_video_path, 'wb') as f_video:
+                temp_generic_video_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=self.output_dir_worker or None)
+                final_video_local_path = temp_generic_video_file.name
+                with open(final_video_local_path, 'wb') as f_video:
                     for chunk in video_response.iter_content(chunk_size=8192):
                         f_video.write(chunk)
-                print(f"Runway video downloaded to temporary path: {local_runway_video_path}")
+                logger.info(f"Runway video (generic flow) downloaded to temporary path: {final_video_local_path}")
 
-                # Upload the downloaded Runway video to Cloudinary
-                cloudinary_final_video_url = self.upload_to_cloudinary(
-                    local_runway_video_path, 
-                    public_id=f"{product_title.replace(' ', '_')}_video_{time.strftime('%Y%m%d%H%M%S')}"
-                )
-                results["cloudinary_video_url"] = cloudinary_final_video_url
+            # Common last step: Upload the final video (either from Chibi or generic flow) to Cloudinary
+            if not final_video_local_path or not os.path.exists(final_video_local_path):
+                raise FileNotFoundError(f"Final video for upload not found at expected path: {final_video_local_path}")
 
-                if cloudinary_final_video_url and user_email:
-                    self.send_video_email(user_email, product_title, cloudinary_final_video_url)
-                elif not cloudinary_final_video_url:
-                    print("Video was not uploaded to Cloudinary. Email not sent.")
-                elif not user_email:
-                    print("No user email provided. Video uploaded to Cloudinary but email not sent.")
+            cloudinary_final_video_url = self.upload_to_cloudinary(
+                final_video_local_path, 
+                public_id=f"{product_title.replace(' ', '_').replace('/', '_')}_video_{time.strftime('%Y%m%d%H%M%S')}"
+            )
+            results["cloudinary_video_url"] = cloudinary_final_video_url
 
-            except Exception as e:
-                print(f"Error during Runway video download or Cloudinary upload: {e}")
-                # Potentially send an error email or handle differently
-            finally:
-                # Clean up the temporary local video file
-                if local_runway_video_path and os.path.exists(local_runway_video_path):
-                    try:
-                        os.remove(local_runway_video_path)
-                        print(f"Cleaned up temporary video file: {local_runway_video_path}")
-                    except Exception as e_clean:
-                        print(f"Error cleaning up temp video file {local_runway_video_path}: {e_clean}")
+            if cloudinary_final_video_url and user_email:
+                self.send_video_email(user_email, product_title, cloudinary_final_video_url)
+            elif not cloudinary_final_video_url:
+                logger.warning("Video was not uploaded to Cloudinary. Email not sent.")
+            elif not user_email:
+                logger.info("No user email provided. Video uploaded to Cloudinary but email not sent.")
+
+        except Exception as e:
+            logger.error(f"Error in process_product for '{product_title}': {e}", exc_info=True)
+            # Re-raise to be caught by run_worker for error reporting to Redis
+            raise 
         finally:
-            # Clean up temporary image file if it was created
-            if temp_file_path and os.path.exists(temp_file_path):
+            # Clean up the initially downloaded image if it was from a URL
+            if temp_downloaded_image_path and os.path.exists(temp_downloaded_image_path):
                 try:
-                    os.remove(temp_file_path)
-                    print(f"Cleaned up temporary image file: {temp_file_path}")
+                    os.remove(temp_downloaded_image_path)
+                    logger.info(f"Cleaned up temporary downloaded image: {temp_downloaded_image_path}")
                 except Exception as e_clean:
-                    print(f"Error cleaning up temp image file {temp_file_path}: {e_clean}")
+                    logger.error(f"Error cleaning up temp downloaded image {temp_downloaded_image_path}: {e_clean}")
+            
+            # Clean up the final local video (generic flow only, ChibiGenerator manages its own output dir)
+            # ChibiGenerator output is in self.output_dir_worker which is cleaned up when the worker instance is done if we add a __del__ or similar
+            # For generic flow, the temp_generic_video_file is created directly
+            if final_video_local_path and os.path.exists(final_video_local_path) and product_title != "Dog Birthday Card":
+                 try:
+                    os.remove(final_video_local_path)
+                    logger.info(f"Cleaned up temporary generic flow video: {final_video_local_path}")
+                 except Exception as e_clean:
+                    logger.error(f"Error cleaning up temp generic video {final_video_local_path}: {e_clean}")
+            
+            # Consider cleaning self.output_dir_worker if it was created for ChibiGenerator for this task
+            # However, if multiple tasks are processed by one worker instance, this dir is shared.
+            # A better approach for self.output_dir_worker is to clean it up if the worker process exits or perhaps per task if feasible.
+            # For now, leaving it to be cleaned if ChibiGenerator init fails or relying on Heroku dyno's ephemeral nature.
 
-        print(f"\n=== Processing complete for: {product_title} ===\n")
+        logger.info(f"\n=== Processing complete for: '{product_title}' ===\n")
         return results
 
     def run_worker(self):
         """
         Run as a worker process, listening to a Redis queue for tasks
         """
-        print("Starting worker mode...")
+        logger.info("Starting worker mode...") # Changed print to logger.info
         
-        # Connect to Redis (using Heroku REDIS_URL if available)
         redis_url = os.environ.get('REDIS_URL')
         if not redis_url:
-            print("Error: REDIS_URL environment variable not set. Cannot run in worker mode.")
+            logger.error("Error: REDIS_URL environment variable not set. Cannot run in worker mode.") # Changed print to logger.error
             return
         
+        r = None # Initialize r before try block
         try:
-            # Use SSL cert verification bypass for self-signed certificates
             r = redis.from_url(redis_url, ssl_cert_reqs=None)
-            print(f"Connected to Redis at {redis_url}")
+            logger.info(f"Connected to Redis at {redis_url}") # Changed print to logger.info
             
-            # Define queue names
             task_queue = 'dog_video_tasks'
             result_queue = 'dog_video_results'
             
-            print(f"Listening for tasks on queue: {task_queue}")
+            logger.info(f"Listening for tasks on queue: {task_queue}") # Changed print to logger.info
             
             while True:
+                task_id_for_error = 'unknown' # Default for error reporting if task_id cannot be extracted
                 try:
-                    # Check for new tasks with a timeout
-                    task_data = r.blpop(task_queue, timeout=10)
+                    task_data_raw = r.blpop(task_queue, timeout=10)
                     
-                    if task_data is None:
-                        # No task was found, continue polling
-                        print("No tasks found. Waiting...")
+                    if task_data_raw is None:
+                        logger.info("No tasks found. Waiting...") # Changed print to logger.info
                         continue
                     
-                    # Extract the task data
-                    _, task_json = task_data
+                    _, task_json = task_data_raw
                     task = json.loads(task_json)
                     
                     task_id = task.get('task_id')
-                    # Updated to look for photo_url instead of photo_path
-                    photo_url = task.get('photo_url')
+                    task_id_for_error = task_id or 'unknown' # Update for specific error reporting
+                    photo_url = task.get('photo_url') # Expecting a URL (Cloudinary or other)
                     title = task.get('product_title', 'Dog Birthday Card')
                     description = task.get('product_description', 'A cute dog birthday card')
-                    email = task.get('email')
+                    # email = task.get('email') # Email sending handled by ChibiGenerator or process_product
+                    user_email = task.get('user_email') # Ensure this matches what server sends if needed
                     
-                    print(f"Processing task {task_id}: {title} for {email}")
+                    logger.info(f"Processing task {task_id}: '{title}' for user '{user_email if user_email else 'N/A'}'") # Changed print to logger.info
                     
-                    # Process the task with is_url=True since we're now using URLs
                     result = self.process_product(
-                        product_photo_path=photo_url,
+                        product_photo_path=photo_url, # This is actually a URL
                         product_title=title,
                         product_description=description,
-                        user_email=email,
-                        is_url=True  # Indicate this is a URL, not a local path
+                        user_email=user_email, # Make sure server.py sends this as 'user_email' in task_data if needed by send_video_email
+                        is_url=True  # Crucial: Indicate that product_photo_path is a URL
                     )
                     
-                    # Store the result in Redis
-                    result['task_id'] = task_id
-                    result['status'] = 'completed'
-                    r.rpush(result_queue, json.dumps(result))
+                    result_payload = {
+                        'task_id': task_id,
+                        'status': 'completed',
+                        'cloudinary_video_url': result.get('cloudinary_video_url')
+                        # Add other relevant result fields if necessary
+                    }
+                    r.rpush(result_queue, json.dumps(result_payload))
                     
-                    print(f"Task {task_id} completed successfully.")
+                    logger.info(f"Task {task_id} completed successfully. Result URL: {result_payload.get('cloudinary_video_url')}") # Changed print to logger.info
                     
                 except KeyboardInterrupt:
-                    print("Worker shutting down...")
+                    logger.info("Worker shutting down due to KeyboardInterrupt...") # Changed print to logger.info
                     break
                 except Exception as e:
-                    print(f"Error processing task: {e}")
-                    traceback.print_exc()
-                    # Try to report the error, but continue processing other tasks
+                    logger.error(f"Error processing task {task_id_for_error}: {e}", exc_info=True) # Changed print to logger.error
                     try:
                         error_data = {
-                            'task_id': task_id if 'task_id' in locals() else 'unknown',
+                            'task_id': task_id_for_error,
                             'status': 'error',
-                            'error': str(e)
+                            'error': str(e),
+                            'details': traceback.format_exc()
                         }
-                        r.rpush(result_queue, json.dumps(error_data))
-                    except:
-                        pass
+                        if r: # Ensure Redis client is available
+                           r.rpush(result_queue, json.dumps(error_data))
+                        else:
+                           logger.error("Redis client 'r' is None, cannot report error to queue.")
+                    except Exception as report_e:
+                        logger.error(f"CRITICAL: Failed to report error for task {task_id_for_error} to Redis: {report_e}", exc_info=True) # Changed print to logger.error
         
         except Exception as e:
-            print(f"Fatal worker error: {e}")
-            traceback.print_exc()
+            logger.error(f"Fatal worker error (Redis connection or main loop): {e}", exc_info=True) # Changed print to logger.error
             sys.exit(1)
+        finally:
+            logger.info("Worker process normally exiting or from fatal error.")
+            if self.output_dir_worker and os.path.exists(self.output_dir_worker):
+                try:
+                    import shutil
+                    shutil.rmtree(self.output_dir_worker)
+                    logger.info(f"Cleaned up ChibiClipGenerator worker temp directory: {self.output_dir_worker}")
+                except Exception as e_clean:
+                    logger.error(f"Error cleaning up ChibiClipGenerator worker temp directory {self.output_dir_worker}: {e_clean}")
 
 
 def main():

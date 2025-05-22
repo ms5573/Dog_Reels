@@ -309,8 +309,31 @@ class ProductMarketingAutomation:
             print(f"Error sending email: {e}")
             return False
 
+    def download_image_from_url(self, image_url):
+        """
+        Download an image from a URL and return the content as bytes
+        """
+        try:
+            print(f"Downloading image from URL: {image_url}")
+            response = requests.get(image_url, stream=True)
+            response.raise_for_status()  # Raise an exception for HTTP errors
+            
+            # Create a temporary file to save the image
+            temp_image_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+            temp_path = temp_image_file.name
+            
+            with open(temp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"Image downloaded to temporary path: {temp_path}")
+            return temp_path
+        except Exception as e:
+            print(f"Error downloading image from URL: {e}")
+            raise
+
     def process_product(self, product_photo_path, product_title, product_description, user_email=None,
-                   upload_to_drive=False, folder_id=None): # Changed default to False
+                   upload_to_drive=False, folder_id=None, is_url=False): # Added is_url parameter
         """
         Process a product through the complete workflow:
         1. Generate AI prompt
@@ -332,77 +355,94 @@ class ProductMarketingAutomation:
         print(f"Generated AI editing prompt: {ai_prompt[:100]}...")
         
         # Load image content
-        # For simplicity, assuming product_photo_path is always a local file path
-        with open(product_photo_path, 'rb') as f:
-            image_content_bytes = f.read() # Read as bytes
-        
-        # Try to edit image with OpenAI (with retries)
-        edited_image_b64 = None
+        temp_file_path = None
         try:
-            edited_image_b64 = self.edit_image_with_openai(image_content_bytes, ai_prompt)
-        except Exception as e:
-            print(f"Failed to edit image with OpenAI after retries: {e}")
-            print("Using original image as fallback...")
-            # Convert original image to base64 as fallback
-            edited_image_b64 = base64.b64encode(image_content_bytes).decode('utf-8')
-        
-        # Upload edited image to ImgBB to get a URL for Runway
-        # (Runway needs a URL for promptImage)
-        img_url_for_runway = self.upload_to_imgbb(edited_image_b64)
-        if not img_url_for_runway:
-            print("Failed to upload image to ImgBB. Cannot proceed with Runway video generation.")
-            raise Exception("Failed to get image URL for Runway input.")
-        results["imgbb_image_url"] = img_url_for_runway
-        
-        # Generate video with Runway
-        runway_task_id = self.generate_runway_video(img_url_for_runway)
-        
-        # Wait for Runway video to complete
-        runway_video_result = self.wait_for_runway_video(runway_task_id)
-        # Assuming the first output is always the desired video MP4
-        runway_output_video_url = runway_video_result["output"][0] 
-        results["runway_video_download_url"] = runway_output_video_url
-        
-        # Download the Runway video locally to then upload to Cloudinary
-        local_runway_video_path = None
-        try:
-            print(f"Downloading Runway video from: {runway_output_video_url}")
-            video_response = requests.get(runway_output_video_url, stream=True)
-            video_response.raise_for_status()
+            # If product_photo_path is a URL, download it first
+            if is_url:
+                temp_file_path = self.download_image_from_url(product_photo_path)
+                # Now use the temp file path as the source
+                with open(temp_file_path, 'rb') as f:
+                    image_content_bytes = f.read()
+            else:
+                # For simplicity, assuming product_photo_path is a local file path
+                with open(product_photo_path, 'rb') as f:
+                    image_content_bytes = f.read() # Read as bytes
             
-            # Create a temporary file to save the video
-            temp_video_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            local_runway_video_path = temp_video_file.name
-            with open(local_runway_video_path, 'wb') as f_video:
-                for chunk in video_response.iter_content(chunk_size=8192):
-                    f_video.write(chunk)
-            print(f"Runway video downloaded to temporary path: {local_runway_video_path}")
+            # Try to edit image with OpenAI (with retries)
+            edited_image_b64 = None
+            try:
+                edited_image_b64 = self.edit_image_with_openai(image_content_bytes, ai_prompt)
+            except Exception as e:
+                print(f"Failed to edit image with OpenAI after retries: {e}")
+                print("Using original image as fallback...")
+                # Convert original image to base64 as fallback
+                edited_image_b64 = base64.b64encode(image_content_bytes).decode('utf-8')
+            
+            # Upload edited image to ImgBB to get a URL for Runway
+            # (Runway needs a URL for promptImage)
+            img_url_for_runway = self.upload_to_imgbb(edited_image_b64)
+            if not img_url_for_runway:
+                print("Failed to upload image to ImgBB. Cannot proceed with Runway video generation.")
+                raise Exception("Failed to get image URL for Runway input.")
+            results["imgbb_image_url"] = img_url_for_runway
+            
+            # Generate video with Runway
+            runway_task_id = self.generate_runway_video(img_url_for_runway)
+            
+            # Wait for Runway video to complete
+            runway_video_result = self.wait_for_runway_video(runway_task_id)
+            # Assuming the first output is always the desired video MP4
+            runway_output_video_url = runway_video_result["output"][0] 
+            results["runway_video_download_url"] = runway_output_video_url
+            
+            # Download the Runway video locally to then upload to Cloudinary
+            local_runway_video_path = None
+            try:
+                print(f"Downloading Runway video from: {runway_output_video_url}")
+                video_response = requests.get(runway_output_video_url, stream=True)
+                video_response.raise_for_status()
+                
+                # Create a temporary file to save the video
+                temp_video_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                local_runway_video_path = temp_video_file.name
+                with open(local_runway_video_path, 'wb') as f_video:
+                    for chunk in video_response.iter_content(chunk_size=8192):
+                        f_video.write(chunk)
+                print(f"Runway video downloaded to temporary path: {local_runway_video_path}")
 
-            # Upload the downloaded Runway video to Cloudinary
-            cloudinary_final_video_url = self.upload_to_cloudinary(
-                local_runway_video_path, 
-                public_id=f"{product_title.replace(' ', '_')}_video_{time.strftime('%Y%m%d%H%M%S')}"
-            )
-            results["cloudinary_video_url"] = cloudinary_final_video_url
+                # Upload the downloaded Runway video to Cloudinary
+                cloudinary_final_video_url = self.upload_to_cloudinary(
+                    local_runway_video_path, 
+                    public_id=f"{product_title.replace(' ', '_')}_video_{time.strftime('%Y%m%d%H%M%S')}"
+                )
+                results["cloudinary_video_url"] = cloudinary_final_video_url
 
-            if cloudinary_final_video_url and user_email:
-                self.send_video_email(user_email, product_title, cloudinary_final_video_url)
-            elif not cloudinary_final_video_url:
-                print("Video was not uploaded to Cloudinary. Email not sent.")
-            elif not user_email:
-                print("No user email provided. Video uploaded to Cloudinary but email not sent.")
+                if cloudinary_final_video_url and user_email:
+                    self.send_video_email(user_email, product_title, cloudinary_final_video_url)
+                elif not cloudinary_final_video_url:
+                    print("Video was not uploaded to Cloudinary. Email not sent.")
+                elif not user_email:
+                    print("No user email provided. Video uploaded to Cloudinary but email not sent.")
 
-        except Exception as e:
-            print(f"Error during Runway video download or Cloudinary upload: {e}")
-            # Potentially send an error email or handle differently
+            except Exception as e:
+                print(f"Error during Runway video download or Cloudinary upload: {e}")
+                # Potentially send an error email or handle differently
+            finally:
+                # Clean up the temporary local video file
+                if local_runway_video_path and os.path.exists(local_runway_video_path):
+                    try:
+                        os.remove(local_runway_video_path)
+                        print(f"Cleaned up temporary video file: {local_runway_video_path}")
+                    except Exception as e_clean:
+                        print(f"Error cleaning up temp video file {local_runway_video_path}: {e_clean}")
         finally:
-            # Clean up the temporary local video file
-            if local_runway_video_path and os.path.exists(local_runway_video_path):
+            # Clean up temporary image file if it was created
+            if temp_file_path and os.path.exists(temp_file_path):
                 try:
-                    os.remove(local_runway_video_path)
-                    print(f"Cleaned up temporary video file: {local_runway_video_path}")
+                    os.remove(temp_file_path)
+                    print(f"Cleaned up temporary image file: {temp_file_path}")
                 except Exception as e_clean:
-                    print(f"Error cleaning up temp video file {local_runway_video_path}: {e_clean}")
+                    print(f"Error cleaning up temp image file {temp_file_path}: {e_clean}")
 
         print(f"\n=== Processing complete for: {product_title} ===\n")
         return results
@@ -420,6 +460,7 @@ class ProductMarketingAutomation:
             return
         
         try:
+            # Use SSL cert verification bypass for self-signed certificates
             r = redis.from_url(redis_url, ssl_cert_reqs=None)
             print(f"Connected to Redis at {redis_url}")
             
@@ -444,19 +485,21 @@ class ProductMarketingAutomation:
                     task = json.loads(task_json)
                     
                     task_id = task.get('task_id')
-                    photo_path = task.get('photo_path')
+                    # Updated to look for photo_url instead of photo_path
+                    photo_url = task.get('photo_url')
                     title = task.get('product_title', 'Dog Birthday Card')
                     description = task.get('product_description', 'A cute dog birthday card')
                     email = task.get('email')
                     
                     print(f"Processing task {task_id}: {title} for {email}")
                     
-                    # Process the task
+                    # Process the task with is_url=True since we're now using URLs
                     result = self.process_product(
-                        product_photo_path=photo_path,
+                        product_photo_path=photo_url,
                         product_title=title,
                         product_description=description,
-                        user_email=email
+                        user_email=email,
+                        is_url=True  # Indicate this is a URL, not a local path
                     )
                     
                     # Store the result in Redis

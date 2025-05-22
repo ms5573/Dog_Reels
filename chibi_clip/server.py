@@ -6,6 +6,8 @@ import time
 import json
 import redis
 from werkzeug.utils import secure_filename # For secure filenames
+import cloudinary
+import cloudinary.uploader
 
 # Assuming chibi_clip.py is in the same directory or package
 try:
@@ -186,8 +188,15 @@ def save_task_status(task_id, status, stage="Queued", result_url=None, error=Non
     
     return data
 
+# Initialize Cloudinary
+cloudinary.config(
+    cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.getenv('CLOUDINARY_API_KEY'),
+    api_secret=os.getenv('CLOUDINARY_API_SECRET')
+)
+
 # Function to add a task to Redis queue for processing by worker
-def add_task_to_queue(task_id, photo_path, birthday_message=None):
+def add_task_to_queue(task_id, photo_url, birthday_message=None):
     if not redis_client:
         app.logger.error("Redis client not initialized. Cannot add task to queue.")
         save_task_status(task_id, "FAILED", "Redis not available", error="Redis connection not available")
@@ -202,7 +211,7 @@ def add_task_to_queue(task_id, photo_path, birthday_message=None):
         # Create task data for worker
         task_data = {
             "task_id": task_id,
-            "photo_path": photo_path,
+            "photo_url": photo_url,  # Now using a URL instead of local path
             "product_title": "Dog Birthday Card",
             "product_description": birthday_message or "Happy Birthday!",
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
@@ -255,26 +264,42 @@ def generate_route(): # Renamed from generate to avoid conflict with module
     if action == "birthday-dance":
         app.logger.info("Birthday theme selected - will use local storage and birthday song")
     
-    # Securely save the uploaded file to a permanent path
-    filename = secure_filename(file.filename)
-    base, ext = os.path.splitext(filename)
-    permanent_filename = f"{base}_{task_id}{ext}"
-    permanent_path = os.path.join(OUTPUT_DIR, permanent_filename)
-    
     try:
-        # Save uploaded file
-        file.save(permanent_path)
-        app.logger.info(f"Saved uploaded file to: {permanent_path}")
-        
-        # Verify file was saved correctly
-        if not os.path.exists(permanent_path):
-            app.logger.error(f"File was not saved properly at: {permanent_path}")
-            return jsonify({"error": "Failed to save uploaded file"}), 500
-        
-        app.logger.info(f"File exists at: {permanent_path}, size: {os.path.getsize(permanent_path)} bytes")
-        
         # Create initial task status
         save_task_status(task_id, "PENDING", "Processing queued")
+        
+        # Upload to Cloudinary first instead of saving locally
+        # We still save locally as a backup, but the primary path is Cloudinary
+        filename = secure_filename(file.filename)
+        base, ext = os.path.splitext(filename)
+        permanent_filename = f"{base}_{task_id}{ext}"
+        permanent_path = os.path.join(OUTPUT_DIR, permanent_filename)
+        
+        # Save uploaded file locally as backup
+        file.save(permanent_path)
+        app.logger.info(f"Saved uploaded file to local backup: {permanent_path}")
+        
+        # Upload to Cloudinary
+        try:
+            # Always use a unique public_id based on task_id to prevent conflicts
+            upload_result = cloudinary.uploader.upload(
+                permanent_path,
+                public_id=f"dog_cards/{task_id}",
+                overwrite=True,
+                resource_type="image"
+            )
+            cloudinary_url = upload_result.get('secure_url')
+            app.logger.info(f"Uploaded image to Cloudinary: {cloudinary_url}")
+            
+            if not cloudinary_url:
+                raise Exception("Cloudinary upload succeeded but no URL was returned")
+                
+        except Exception as cloud_error:
+            app.logger.error(f"Cloudinary upload failed: {cloud_error}")
+            return jsonify({
+                "error": "Failed to upload image to cloud storage",
+                "message": "Our image processing service is experiencing issues. Please try again later."
+            }), 500
         
         # Check if Redis is available first
         if not redis_client:
@@ -288,11 +313,11 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 "code": "REDIS_UNAVAILABLE"
             }), 503
             
-        # Add task to Redis queue
+        # Add task to Redis queue with Cloudinary URL instead of local path
         try:
             # Test Redis connection before attempting to queue
             redis_client.ping()
-            success = add_task_to_queue(task_id, permanent_path, birthday_message)
+            success = add_task_to_queue(task_id, cloudinary_url, birthday_message)
             
             if not success:
                 return jsonify({

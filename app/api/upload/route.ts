@@ -102,7 +102,15 @@ export async function POST(request: NextRequest) {
         throw new Error('REDIS_URL environment variable is not set');
       }
       
-      const redis = createClient({ url: redisUrl });
+      // Handle SSL certificates for Heroku Redis
+      const redisConfig: any = { url: redisUrl };
+      if (redisUrl.startsWith('rediss://')) {
+        redisConfig.socket = {
+          rejectUnauthorized: false
+        };
+      }
+      
+      const redis = createClient(redisConfig);
       await redis.connect();
       
       // Create task data with correct field names for the worker

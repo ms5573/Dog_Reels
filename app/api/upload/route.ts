@@ -3,6 +3,16 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
 import { createClient } from 'redis';
+// @ts-ignore - cloudinary doesn't have built-in TypeScript declarations
+import { v2 as cloudinary } from 'cloudinary';
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true
+});
 
 // Helper function to update status file
 function updateTaskStatus(statusFile, status, stage, extraData = {}) {
@@ -44,22 +54,9 @@ export async function POST(request: NextRequest) {
     const bytes = await dogPhoto.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    // Save the image to a temporary location
-    const imageExt = dogPhoto.name.split('.').pop() || 'jpg';
-    const imagePath = path.join(outputDir, `${taskId}.${imageExt}`);
-    fs.writeFileSync(imagePath, buffer);
-
-    // Save message to a file
-    const messagePath = path.join(outputDir, `${taskId}.txt`);
-    fs.writeFileSync(messagePath, message);
-    
-    // Save email to a file
-    const emailPath = path.join(outputDir, `${taskId}_email.txt`);
-    fs.writeFileSync(emailPath, email);
-
     // Create a task status file to track progress
     const statusFile = path.join(outputDir, `${taskId}_status.json`);
-    updateTaskStatus(statusFile, 'PENDING', 'Queued for processing...', {
+    updateTaskStatus(statusFile, 'PENDING', 'Uploading image to cloud storage...', {
       created: new Date().toISOString(),
       userEmail: email
     });
@@ -69,23 +66,52 @@ export async function POST(request: NextRequest) {
     fs.writeFileSync(logFile, `Task ${taskId} queued for processing at ${new Date().toISOString()}\nEmail: ${email}\n`);
 
     try {
-      // Connect to Redis using environment variable
+      // Upload image to Cloudinary
+      console.log(`Uploading image to Cloudinary for task ${taskId}`);
+      
+      const uploadResult = await new Promise<any>((resolve, reject) => {
+        cloudinary.uploader.upload_stream(
+          {
+            public_id: `dog_cards/${taskId}`,
+            overwrite: true,
+            resource_type: "image"
+          },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        ).end(buffer);
+      });
+
+      const cloudinaryUrl = uploadResult?.secure_url;
+      
+      if (!cloudinaryUrl) {
+        throw new Error('Cloudinary upload failed: No secure_url returned');
+      }
+
+      console.log(`Image uploaded to Cloudinary: ${cloudinaryUrl}`);
+      fs.appendFileSync(logFile, `Image uploaded to Cloudinary: ${cloudinaryUrl}\n`);
+
+      updateTaskStatus(statusFile, 'PENDING', 'Image uploaded, queuing for processing...', {
+        cloudinary_url: cloudinaryUrl
+      });
+
+      // Connect to Redis
       const redisUrl = process.env.REDIS_URL;
       if (!redisUrl) {
         throw new Error('REDIS_URL environment variable is not set');
       }
       
-      // Create Redis client
       const redis = createClient({ url: redisUrl });
       await redis.connect();
       
-      // Create task data
+      // Create task data with correct field names for the worker
       const taskData = {
         task_id: taskId,
-        photo_path: imagePath,
-        product_title: "Dog Birthday Video",
+        photo_url: cloudinaryUrl,  // Changed from photo_path to photo_url
+        product_title: "Dog Birthday Card",
         product_description: message,
-        email: email,
+        user_email: email,  // Changed from 'email' to 'user_email'
         created_at: new Date().toISOString()
       };
       
@@ -106,22 +132,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         task_id: taskId,
-        message: 'Upload successful, processing queued. You will receive an email with the video link.'
+        message: 'Upload successful, processing queued. You will receive an email with the video link when ready!'
       });
 
-    } catch (error) {
-      console.error('Redis queue error in POST /api/upload:', error);
-      if (fs.existsSync(statusFile)) {
-        updateTaskStatus(statusFile, 'FAILED', 'Failed to queue task', {
-          error: error.message,
-          completed: new Date().toISOString()
-        });
-      }
+    } catch (cloudinaryError) {
+      console.error('Cloudinary upload error:', cloudinaryError);
+      updateTaskStatus(statusFile, 'FAILED', 'Image upload failed', {
+        error: cloudinaryError.message,
+        completed: new Date().toISOString()
+      });
       return NextResponse.json(
-        { error: 'Failed to queue task for processing' },
+        { error: 'Failed to upload image to cloud storage' },
         { status: 500 }
       );
     }
+
   } catch (error) {
     console.error('General error in POST /api/upload:', error);
     return NextResponse.json(

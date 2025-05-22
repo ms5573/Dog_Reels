@@ -345,7 +345,7 @@ class ProductMarketingAutomation:
             """
             
             message = Mail(
-                from_email='dogreel-noreply@example.com',
+                from_email='puparazee@gmail.com',
                 to_emails=to_email,
                 subject=f'Your Dog Birthday Card is Ready! 🎂🐶',
                 html_content=html_content

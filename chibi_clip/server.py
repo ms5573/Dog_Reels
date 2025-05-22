@@ -110,10 +110,38 @@ REDIS_URL = os.getenv('REDIS_URL')
 redis_client = None
 if REDIS_URL:
     try:
-        redis_client = redis.from_url(REDIS_URL)
+        # Set SSL verification to false for self-signed certificates
+        connection_pool = redis.ConnectionPool.from_url(
+            REDIS_URL,
+            ssl_cert_reqs=None  # Disable certificate verification
+        )
+        redis_client = redis.Redis(connection_pool=connection_pool)
+        # Test connection
+        redis_client.ping()
         print(f"Connected to Redis at {REDIS_URL}")
     except Exception as e:
         print(f"Failed to connect to Redis: {e}")
+        # Fall back to a non-SSL connection if SSL fails
+        try:
+            if 'CERTIFICATE_VERIFY_FAILED' in str(e):
+                print("Trying alternative connection method for Redis...")
+                # Import necessary SSL settings
+                import ssl
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                
+                connection_pool = redis.ConnectionPool.from_url(
+                    REDIS_URL,
+                    ssl=True,
+                    ssl_context=ssl_context
+                )
+                redis_client = redis.Redis(connection_pool=connection_pool)
+                redis_client.ping()
+                print("Connected to Redis using custom SSL context")
+        except Exception as backup_error:
+            print(f"All Redis connection attempts failed: {backup_error}")
+            redis_client = None
 else:
     print("REDIS_URL not found. Worker tasks will not be processed correctly.")
 
@@ -248,18 +276,50 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         # Create initial task status
         save_task_status(task_id, "PENDING", "Processing queued")
         
+        # Check if Redis is available first
+        if not redis_client:
+            app.logger.error("Redis client is not available. Cannot add task to queue.")
+            # Save status for debugging
+            save_task_status(task_id, "FAILED", "Redis connection error", 
+                            error="Could not connect to the task processing system. Please try again later.")
+            return jsonify({
+                "error": "Task processing system unavailable",
+                "message": "Our video generation service is currently experiencing issues. Please try again later.",
+                "code": "REDIS_UNAVAILABLE"
+            }), 503
+            
         # Add task to Redis queue
-        success = add_task_to_queue(task_id, permanent_path, birthday_message)
-        
-        if not success:
-            return jsonify({"error": "Failed to queue task for processing"}), 500
-        
-        # Return task ID for status polling
-        return jsonify({
-            "task_id": task_id,
-            "status": "QUEUED",
-            "message": "Your request has been queued for processing. Please check status endpoint."
-        })
+        try:
+            # Test Redis connection before attempting to queue
+            redis_client.ping()
+            success = add_task_to_queue(task_id, permanent_path, birthday_message)
+            
+            if not success:
+                return jsonify({
+                    "error": "Failed to queue task for processing", 
+                    "message": "Your request could not be added to the processing queue. Please try again."
+                }), 500
+            
+            # Return task ID for status polling
+            return jsonify({
+                "task_id": task_id,
+                "status": "QUEUED",
+                "message": "Your request has been queued for processing. Please check status endpoint."
+            })
+        except redis.exceptions.ConnectionError as e:
+            app.logger.error(f"Redis connection error when queueing task: {e}")
+            save_task_status(task_id, "FAILED", "Redis connection failed", error=str(e))
+            return jsonify({
+                "error": "Connection to processing service failed",
+                "message": "We encountered an issue connecting to our video processing service. Please try again later."
+            }), 503
+        except redis.exceptions.RedisError as e:
+            app.logger.error(f"Redis error when queueing task: {e}")
+            save_task_status(task_id, "FAILED", "Redis operation failed", error=str(e))
+            return jsonify({
+                "error": "Processing service error",
+                "message": "An error occurred in our video processing service. Please try again later."
+            }), 500
         
     except Exception as e:
         app.logger.error(f"Error in /generate endpoint: {e}", exc_info=True)

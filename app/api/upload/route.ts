@@ -2,10 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
-import { exec } from 'child_process';
-import util from 'util';
-
-const execPromise = util.promisify(exec);
+import { createClient } from 'redis';
 
 // Helper function to update status file
 function updateTaskStatus(statusFile, status, stage, extraData = {}) {
@@ -56,97 +53,72 @@ export async function POST(request: NextRequest) {
     const messagePath = path.join(outputDir, `${taskId}.txt`);
     fs.writeFileSync(messagePath, message);
     
-    // Save email to a file (or pass as arg directly)
+    // Save email to a file
     const emailPath = path.join(outputDir, `${taskId}_email.txt`);
     fs.writeFileSync(emailPath, email);
 
     // Create a task status file to track progress
     const statusFile = path.join(outputDir, `${taskId}_status.json`);
-    updateTaskStatus(statusFile, 'PENDING', 'Uploading...', {
+    updateTaskStatus(statusFile, 'PENDING', 'Queued for processing...', {
       created: new Date().toISOString(),
       userEmail: email
     });
 
     // Create a log file for this task
     const logFile = path.join(outputDir, `${taskId}_processing.log`);
-    fs.writeFileSync(logFile, `Processing started for task ${taskId} for email ${email}: ${new Date().toISOString()}\n`);
+    fs.writeFileSync(logFile, `Task ${taskId} queued for processing at ${new Date().toISOString()}\nEmail: ${email}\n`);
 
-    // Run the Python Chibi-Clip process asynchronously
     try {
-      updateTaskStatus(statusFile, 'PROCESSING', 'Starting image processing...');
+      // Connect to Redis using environment variable
+      const redisUrl = process.env.REDIS_URL;
+      if (!redisUrl) {
+        throw new Error('REDIS_URL environment variable is not set');
+      }
       
-      // IMPORTANT: Sanitize/escape inputs for command execution if they are directly used in the command string.
-      // For this script, we are passing paths and a simple action string.
-      // The product_title and product_description for the python script will be derived from message or a fixed value.
-      // The email is now passed as a command line argument.
-      const productTitle = "Dog Birthday Video";
-      const productDescription = message;
-
-      // Construct the command to run the Python script
-      // Ensure paths with spaces are quoted. The email is also quoted.
-      const command = `conda run -n chibi_env python product_marketing_automation.py "${imagePath}" "${productTitle}" "${productDescription}" --email "${email}" >> "${logFile}" 2>&1`;
+      // Create Redis client
+      const redis = createClient({ url: redisUrl });
+      await redis.connect();
       
-      console.log(`Executing command: ${command}`);
+      // Create task data
+      const taskData = {
+        task_id: taskId,
+        photo_path: imagePath,
+        product_title: "Dog Birthday Video",
+        product_description: message,
+        email: email,
+        created_at: new Date().toISOString()
+      };
       
-      // Start the async process without awaiting its completion here
-      exec(command, (error, stdout, stderr) => {
-        fs.appendFileSync(logFile, `\n--- Python Script Execution Finished ---`);
-        fs.appendFileSync(logFile, `\nTimestamp: ${new Date().toISOString()}`);
-
-        if (error) {
-          console.error(`Python script execution error for task ${taskId}:`, error);
-          fs.appendFileSync(logFile, `\nEXECUTION ERROR: ${error.message}\n${error.stack || ''}`);
-          updateTaskStatus(statusFile, 'FAILED', 'Video generation script failed', {
-            error: `Script execution failed: ${error.message}`,
-            completed: new Date().toISOString()
-          });
-          return;
-        }
-
-        let finalCloudinaryUrl = null;
-        try {
-            const scriptOutput = fs.readFileSync(logFile, 'utf-8');
-            const cloudinaryMatch = scriptOutput.match(/Final Video URL \(Cloudinary\): (https:\/\/[^\s]+)/);
-            if (cloudinaryMatch && cloudinaryMatch[1]) {
-                finalCloudinaryUrl = cloudinaryMatch[1];
-                console.log(`Found Cloudinary URL in script output for task ${taskId}: ${finalCloudinaryUrl}`);
-            }
-        } catch (readError) {
-            console.error(`Error reading log file for task ${taskId} to find Cloudinary URL:`, readError);
-        }
-
-        if (finalCloudinaryUrl) {
-            updateTaskStatus(statusFile, 'COMPLETE', 'Video processed and email sent!', {
-                result_url: finalCloudinaryUrl,
-                videoPath: finalCloudinaryUrl,
-                cloudfront_url: finalCloudinaryUrl,
-                completed: new Date().toISOString()
-            });
-        } else {
-            console.warn(`Python script completed for task ${taskId}, but Cloudinary URL not found in logs.`);
-            updateTaskStatus(statusFile, 'FAILED', 'Processing complete, but final video URL missing', {
-                error: 'Could not retrieve final video URL after processing. Check logs.',
-                completed: new Date().toISOString()
-            });
-        }
+      // Add task to queue
+      const queueName = 'dog_video_tasks';
+      await redis.rPush(queueName, JSON.stringify(taskData));
+      
+      console.log(`Added task ${taskId} to Redis queue '${queueName}'`);
+      fs.appendFileSync(logFile, `Task added to Redis queue '${queueName}'\n`);
+      
+      // Disconnect from Redis
+      await redis.disconnect();
+      
+      updateTaskStatus(statusFile, 'QUEUED', 'Waiting for worker processing...', {
+        queued_at: new Date().toISOString()
       });
 
       return NextResponse.json({
         success: true,
         task_id: taskId,
-        message: 'Upload successful, processing started. You will receive an email with the video link.'
+        message: 'Upload successful, processing queued. You will receive an email with the video link.'
       });
 
     } catch (error) {
-      console.error('Execution error in POST /api/upload:', error);
+      console.error('Redis queue error in POST /api/upload:', error);
       if (fs.existsSync(statusFile)) {
-        updateTaskStatus(statusFile, 'FAILED', 'Failed to start processing command', {
+        updateTaskStatus(statusFile, 'FAILED', 'Failed to queue task', {
           error: error.message,
           completed: new Date().toISOString()
         });
       }
       return NextResponse.json(
-        { error: 'Failed to start processing' },
+        { error: 'Failed to queue task for processing' },
         { status: 500 }
       );
     }

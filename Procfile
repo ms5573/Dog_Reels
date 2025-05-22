@@ -1,2 +1,2 @@
-web: gunicorn chibi_clip.server:app --timeout 300
+web: npm start
 worker: python product_marketing_automation.py --worker

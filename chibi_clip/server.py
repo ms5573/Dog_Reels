@@ -4,7 +4,7 @@ import uuid
 import tempfile # For secure temporary file creation
 import time
 import json
-import threading
+import redis
 from werkzeug.utils import secure_filename # For secure filenames
 
 # Assuming chibi_clip.py is in the same directory or package
@@ -105,6 +105,18 @@ gen = ChibiClipGenerator(
     output_dir=OUTPUT_DIR 
 )
 
+# Initialize Redis client
+REDIS_URL = os.getenv('REDIS_URL')
+redis_client = None
+if REDIS_URL:
+    try:
+        redis_client = redis.from_url(REDIS_URL)
+        print(f"Connected to Redis at {REDIS_URL}")
+    except Exception as e:
+        print(f"Failed to connect to Redis: {e}")
+else:
+    print("REDIS_URL not found. Worker tasks will not be processed correctly.")
+
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'} # Add more if needed
 
 def allowed_file(filename):
@@ -146,38 +158,39 @@ def save_task_status(task_id, status, stage="Queued", result_url=None, error=Non
     
     return data
 
-# Function to process clip creation in a background thread but within the same dyno
-def process_clip_async(task_id, photo_path, birthday_message=None):
+# Function to add a task to Redis queue for processing by worker
+def add_task_to_queue(task_id, photo_path, birthday_message=None):
+    if not redis_client:
+        app.logger.error("Redis client not initialized. Cannot add task to queue.")
+        save_task_status(task_id, "FAILED", "Redis not available", error="Redis connection not available")
+        return False
+    
     try:
-        app.logger.info(f"Starting background processing for task {task_id}")
+        app.logger.info(f"Adding task {task_id} to Redis queue")
         
         # Update task status
-        save_task_status(task_id, "PROCESSING", "Generating birthday card")
+        save_task_status(task_id, "QUEUED", "Added to processing queue")
         
-        # Process the clip
-        result = gen.process_clip(
-            photo_path=photo_path,
-            action="birthday-dance",
-            birthday_message=birthday_message,
-            use_local_storage=True,
-            extended_duration=45
-        )
+        # Create task data for worker
+        task_data = {
+            "task_id": task_id,
+            "photo_path": photo_path,
+            "product_title": "Dog Birthday Card",
+            "product_description": birthday_message or "Happy Birthday!",
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
         
-        app.logger.info(f"Successfully processed clip for task {task_id}")
+        # Add to queue
+        queue_name = 'dog_video_tasks'
+        redis_client.rpush(queue_name, json.dumps(task_data))
         
-        # Get video URL
-        video_url = None
-        if "local_video_path" in result:
-            filename = os.path.basename(result["local_video_path"])
-            video_url = f"/videos/{filename}"
-            app.logger.info(f"Video available at: {video_url}")
-        
-        # Update task status with result
-        save_task_status(task_id, "SUCCESS", "Processing complete", result_url=video_url)
+        app.logger.info(f"Task {task_id} successfully added to Redis queue '{queue_name}'")
+        return True
         
     except Exception as e:
-        app.logger.error(f"Error in background processing: {e}", exc_info=True)
-        save_task_status(task_id, "FAILED", "Processing failed", error=str(e))
+        app.logger.error(f"Error adding task to Redis queue: {e}", exc_info=True)
+        save_task_status(task_id, "FAILED", "Queue error", error=str(e))
+        return False
 
 # Route to serve locally stored images
 @app.route('/images/<filename>')
@@ -233,35 +246,88 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         app.logger.info(f"File exists at: {permanent_path}, size: {os.path.getsize(permanent_path)} bytes")
         
         # Create initial task status
-        save_task_status(task_id, "PENDING", "Processing started")
+        save_task_status(task_id, "PENDING", "Processing queued")
         
-        # Process in background thread but within same dyno
-        app.logger.info(f"Starting background thread for task {task_id}")
-        thread = threading.Thread(
-            target=process_clip_async,
-            args=(task_id, permanent_path, birthday_message)
-        )
-        thread.daemon = True
-        thread.start()
+        # Add task to Redis queue
+        success = add_task_to_queue(task_id, permanent_path, birthday_message)
+        
+        if not success:
+            return jsonify({"error": "Failed to queue task for processing"}), 500
         
         # Return task ID for status polling
         return jsonify({
             "task_id": task_id,
-            "status": "PENDING",
-            "message": "Your request is being processed",
-            "status_url": f"/task/{task_id}"
-        }), 202
+            "status": "QUEUED",
+            "message": "Your request has been queued for processing. Please check status endpoint."
+        })
         
     except Exception as e:
-        app.logger.error(f"Error during request processing: {e}", exc_info=True)
-        return jsonify({"error": f"Failed to process your request: {str(e)}"}), 500
+        app.logger.error(f"Error in /generate endpoint: {e}", exc_info=True)
+        return jsonify({
+            "error": str(e),
+            "details": "An error occurred while processing your request"
+        }), 500
 
 # Route to check task status
 @app.route('/task/<task_id>', methods=['GET'])
 def get_task_status(task_id):
     # First check in-memory storage
     if task_id in tasks:
-        return jsonify(tasks[task_id]), 200
+        status_data = tasks[task_id]
+        
+        # If status is still QUEUED or PROCESSING, check Redis for results
+        if status_data.get('status') in ['QUEUED', 'PROCESSING', 'PENDING'] and redis_client:
+            try:
+                # Check for results in the results queue
+                result_queue = 'dog_video_results'
+                queue_length = redis_client.llen(result_queue)
+                
+                if queue_length:
+                    for i in range(queue_length):
+                        result_json = redis_client.lindex(result_queue, i)
+                        if result_json:
+                            result = json.loads(result_json)
+                            if result.get('task_id') == task_id:
+                                # Found our task result
+                                if result.get('status') == 'completed' and result.get('cloudinary_video_url'):
+                                    # Update the status file
+                                    status_data['status'] = 'SUCCESS'
+                                    status_data['stage'] = 'Video processing complete'
+                                    status_data['result_url'] = result.get('cloudinary_video_url')
+                                    status_data['updated'] = time.time()
+                                    
+                                    # Save the updated status
+                                    tasks[task_id] = status_data
+                                    task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
+                                    with open(task_file, "w") as f:
+                                        json.dump(status_data, f)
+                                    
+                                    # Remove this result from the queue
+                                    redis_client.lrem(result_queue, 1, result_json)
+                                    app.logger.info(f"Updated task {task_id} with completed result from Redis")
+                                    
+                                elif result.get('status') == 'error':
+                                    # Update with error
+                                    status_data['status'] = 'FAILED'
+                                    status_data['stage'] = 'Processing failed'
+                                    status_data['error'] = result.get('error', 'Unknown error')
+                                    status_data['updated'] = time.time()
+                                    
+                                    # Save the updated status
+                                    tasks[task_id] = status_data
+                                    task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
+                                    with open(task_file, "w") as f:
+                                        json.dump(status_data, f)
+                                    
+                                    # Remove this result from the queue
+                                    redis_client.lrem(result_queue, 1, result_json)
+                                    app.logger.info(f"Updated task {task_id} with error result from Redis")
+                                
+                                break
+            except Exception as e:
+                app.logger.error(f"Error checking Redis for task results: {e}")
+        
+        return jsonify(status_data), 200
     
     # Otherwise check file storage
     task_file = os.path.join(TASKS_DIR, f"{task_id}.json")
@@ -275,6 +341,56 @@ def get_task_status(task_id):
         
         # Store in memory for future lookups
         tasks[task_id] = task_data
+        
+        # If status is still QUEUED or PROCESSING, check Redis for results
+        if task_data.get('status') in ['QUEUED', 'PROCESSING', 'PENDING'] and redis_client:
+            try:
+                # Check for results in the results queue
+                result_queue = 'dog_video_results'
+                queue_length = redis_client.llen(result_queue)
+                
+                if queue_length:
+                    for i in range(queue_length):
+                        result_json = redis_client.lindex(result_queue, i)
+                        if result_json:
+                            result = json.loads(result_json)
+                            if result.get('task_id') == task_id:
+                                # Found our task result
+                                if result.get('status') == 'completed' and result.get('cloudinary_video_url'):
+                                    # Update the status file
+                                    task_data['status'] = 'SUCCESS'
+                                    task_data['stage'] = 'Video processing complete'
+                                    task_data['result_url'] = result.get('cloudinary_video_url')
+                                    task_data['updated'] = time.time()
+                                    
+                                    # Save the updated status
+                                    tasks[task_id] = task_data
+                                    with open(task_file, "w") as f:
+                                        json.dump(task_data, f)
+                                    
+                                    # Remove this result from the queue
+                                    redis_client.lrem(result_queue, 1, result_json)
+                                    app.logger.info(f"Updated task {task_id} with completed result from Redis")
+                                    
+                                elif result.get('status') == 'error':
+                                    # Update with error
+                                    task_data['status'] = 'FAILED'
+                                    task_data['stage'] = 'Processing failed'
+                                    task_data['error'] = result.get('error', 'Unknown error')
+                                    task_data['updated'] = time.time()
+                                    
+                                    # Save the updated status
+                                    tasks[task_id] = task_data
+                                    with open(task_file, "w") as f:
+                                        json.dump(task_data, f)
+                                    
+                                    # Remove this result from the queue
+                                    redis_client.lrem(result_queue, 1, result_json)
+                                    app.logger.info(f"Updated task {task_id} with error result from Redis")
+                                
+                                break
+            except Exception as e:
+                app.logger.error(f"Error checking Redis for task results: {e}")
         
         return jsonify(task_data), 200
     except Exception as e:

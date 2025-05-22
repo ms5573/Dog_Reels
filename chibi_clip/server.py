@@ -189,11 +189,20 @@ def save_task_status(task_id, status, stage="Queued", result_url=None, error=Non
     return data
 
 # Initialize Cloudinary
-cloudinary.config(
-    cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
-    api_key=os.getenv('CLOUDINARY_API_KEY'),
-    api_secret=os.getenv('CLOUDINARY_API_SECRET')
-)
+cloudinary_cloud_name = os.getenv('CLOUDINARY_CLOUD_NAME')
+cloudinary_api_key = os.getenv('CLOUDINARY_API_KEY')
+cloudinary_api_secret = os.getenv('CLOUDINARY_API_SECRET')
+
+if cloudinary_cloud_name and cloudinary_api_key and cloudinary_api_secret:
+    cloudinary.config( 
+        cloud_name = cloudinary_cloud_name, 
+        api_key = cloudinary_api_key, 
+        api_secret = cloudinary_api_secret,
+        secure = True
+    )
+    print("Cloudinary configured successfully for server.")
+else:
+    print("WARNING: Cloudinary credentials not fully set. File uploads will fail.")
 
 # Function to add a task to Redis queue for processing by worker
 def add_task_to_queue(task_id, photo_url, birthday_message=None):
@@ -280,7 +289,12 @@ def generate_route(): # Renamed from generate to avoid conflict with module
         app.logger.info(f"Saved uploaded file to local backup: {permanent_path}")
         
         # Upload to Cloudinary
+        cloudinary_url = None
         try:
+            # First verify Cloudinary is properly configured
+            if not (cloudinary_cloud_name and cloudinary_api_key and cloudinary_api_secret):
+                raise Exception("Cloudinary credentials are not properly configured")
+            
             # Always use a unique public_id based on task_id to prevent conflicts
             upload_result = cloudinary.uploader.upload(
                 permanent_path,
@@ -296,10 +310,15 @@ def generate_route(): # Renamed from generate to avoid conflict with module
                 
         except Exception as cloud_error:
             app.logger.error(f"Cloudinary upload failed: {cloud_error}")
-            return jsonify({
-                "error": "Failed to upload image to cloud storage",
-                "message": "Our image processing service is experiencing issues. Please try again later."
-            }), 500
+            
+            # Use local file path as fallback
+            # This won't work across dynos but we'll let the worker handle the error gracefully
+            app.logger.warning("Using local file path as fallback - Note: This may not work across dynos")
+            cloudinary_url = f"file://{permanent_path}"
+            
+            # Save error in task status
+            save_task_status(task_id, "WARNING", "Cloudinary upload failed, using local path", 
+                            error=f"Cloud storage upload failed: {str(cloud_error)}")
         
         # Check if Redis is available first
         if not redis_client:

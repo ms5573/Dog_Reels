@@ -314,7 +314,23 @@ class ProductMarketingAutomation:
         Download an image from a URL and return the content as bytes
         """
         try:
-            print(f"Downloading image from URL: {image_url}")
+            print(f"Processing image from URL: {image_url}")
+            
+            # Handle file:// protocol URLs (fallback from Cloudinary)
+            if image_url.startswith('file://'):
+                file_path = image_url[7:]  # Remove file:// prefix
+                print(f"Using local file fallback path: {file_path}")
+                
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    print(f"WARNING: Local file not found: {file_path}")
+                    raise FileNotFoundError(f"Local file not found: {file_path}")
+                
+                # No need to download, just return the path
+                return file_path
+            
+            # Regular URL handling
+            print(f"Downloading image from remote URL: {image_url}")
             response = requests.get(image_url, stream=True)
             response.raise_for_status()  # Raise an exception for HTTP errors
             

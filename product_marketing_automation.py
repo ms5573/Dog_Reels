@@ -84,6 +84,7 @@ class ProductMarketingAutomation:
         # Initialize ChibiClipGenerator if available
         self.chibi_generator = None
         self.output_dir_worker = None
+        self.chibi_generator_initialized_successfully = False # Instance flag
         if CHIBI_GENERATOR_AVAILABLE:
             try:
                 self.output_dir_worker = tempfile.mkdtemp(prefix="chibi_worker_")
@@ -95,9 +96,10 @@ class ProductMarketingAutomation:
                     output_dir=self.output_dir_worker
                 )
                 logger.info(f"ChibiClipGenerator initialized successfully in {self.output_dir_worker}")
+                self.chibi_generator_initialized_successfully = True
             except Exception as e:
                 logger.error(f"Error initializing ChibiClipGenerator: {e}. Birthday card features may not work.")
-                CHIBI_GENERATOR_AVAILABLE = False # Ensure this is set if init fails
+                # self.chibi_generator_initialized_successfully remains False
                 if self.output_dir_worker and os.path.exists(self.output_dir_worker):
                     # Clean up temp dir if generator init failed
                     try:
@@ -398,7 +400,6 @@ class ProductMarketingAutomation:
         results = {"product_title": product_title}
         temp_downloaded_image_path = None # Path for image downloaded from URL
         final_video_local_path = None # Path for the final video to be uploaded
-        chibi_temp_dir_to_clean = None # For ChibiGenerator's specific temp output, if different
 
         try:
             # Step 1: Get local image path (download if URL, or use directly if local path)
@@ -411,8 +412,9 @@ class ProductMarketingAutomation:
             if not current_image_path or not os.path.exists(current_image_path):
                 raise FileNotFoundError(f"Source image path not found or invalid: {current_image_path}")
 
-            # Check if we should use the specialized Dog Birthday Card flow
-            if CHIBI_GENERATOR_AVAILABLE and self.chibi_generator and product_title == "Dog Birthday Card":
+            # Use CHIBI_GENERATOR_AVAILABLE (module-level import check) 
+            # AND self.chibi_generator_initialized_successfully (instance-level init check)
+            if CHIBI_GENERATOR_AVAILABLE and self.chibi_generator_initialized_successfully and product_title == "Dog Birthday Card":
                 logger.info("Using ChibiClipGenerator for Dog Birthday Card.")
                 
                 # ChibiClipGenerator's process_clip expects a photo_path and birthday_message.
@@ -436,8 +438,12 @@ class ProductMarketingAutomation:
 
             else:
                 logger.info("Using generic product marketing video flow.")
-                if not CHIBI_GENERATOR_AVAILABLE or not self.chibi_generator:
-                    logger.warning("ChibiClipGenerator was not available or not initialized. Dog Birthday Card will be generic.")
+                if not (CHIBI_GENERATOR_AVAILABLE and self.chibi_generator_initialized_successfully) and product_title == "Dog Birthday Card":
+                    logger.warning("ChibiClipGenerator import or initialization failed. 'Dog Birthday Card' will be processed with generic flow.")
+                elif not CHIBI_GENERATOR_AVAILABLE and product_title == "Dog Birthday Card":
+                    logger.warning("ChibiClipGenerator module not imported. 'Dog Birthday Card' will be generic.")
+                elif not self.chibi_generator_initialized_successfully and product_title == "Dog Birthday Card":
+                    logger.warning("ChibiClipGenerator instance not initialized. 'Dog Birthday Card' will be generic.")
 
                 # Generic Flow (Original logic)
                 ai_prompt = self.generate_ai_prompt(product_title, product_description)

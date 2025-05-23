@@ -312,24 +312,6 @@ export default function Home() {
             </div>
           </div>
         </div>
-        
-        {/* Preview Section */}
-        {(currentStep === "upload" || currentStep === "processing") && (
-          <div className="mb-16">
-            <div className="bg-white rounded-3xl shadow-xl p-8 border border-purple-100">
-              <h2 className="text-3xl font-bold gradient-text mb-6 text-center">🎬 Preview Example</h2>
-              <div className="aspect-video bg-gradient-to-br from-purple-100 to-pink-100 rounded-2xl flex items-center justify-center">
-                <div className="text-center p-8">
-                  <Cake className="h-16 w-16 text-purple-500 mx-auto mb-4" />
-                  <p className="text-purple-600 text-xl font-semibold mb-2">
-                    🎵 A preview of your dog's dancing animation will appear here after processing! 🕺
-                  </p>
-                  <p className="text-gray-500">Get ready for some serious cuteness! 🥰</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Footer */}
         <div className="text-center">

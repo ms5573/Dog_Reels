@@ -2,7 +2,7 @@
 
 // Main page component for Dog Birthday Card Generator
 import { useState, useEffect } from "react"
-import { Upload, MessageSquare, Gift, Sparkles, Cake, Music, MailCheck } from "lucide-react"
+import { Upload, MessageSquare, Gift, Cake, Music, MailCheck } from "lucide-react"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import UploadForm from "../components/upload-form"
@@ -163,121 +163,181 @@ export default function Home() {
   };
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-4 md:p-24 bg-gradient-to-br from-pink-100 via-purple-50 to-blue-100">
-      {/* Animated background elements */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
-        <div className="absolute -top-24 -left-24 w-96 h-96 bg-pink-300 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-blob"></div>
-        <div className="absolute top-0 -right-24 w-96 h-96 bg-yellow-300 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-blob" style={{ animationDelay: '2s' }}></div>
-        <div className="absolute -bottom-24 left-1/3 w-96 h-96 bg-blue-300 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-blob" style={{ animationDelay: '4s' }}></div>
-      </div>
-
-      <div className="z-10 max-w-5xl w-full items-center justify-between text-sm flex flex-col">
-        <div className="text-center mb-12">
-          <div className="flex justify-center mb-3">
-            <div className="relative">
-              <Cake className="h-16 w-16 text-purple-600" />
-              <Sparkles className="h-8 w-8 text-yellow-500 absolute -top-2 -right-2 animate-pulse" />
+    <main className="min-h-screen bg-gradient-to-br from-slate-50 via-purple-50 to-pink-50">
+      {/* Clean background pattern */}
+      <div className="absolute inset-0 opacity-30 bg-purple-100"></div>
+      
+      <div className="relative z-10 container mx-auto px-4 py-8 max-w-6xl">
+        {/* Hero Section */}
+        <div className="text-center mb-16 animate-gentle-fade">
+          {/* Main icon */}
+          <div className="flex justify-center mb-8">
+            <div className="bg-white p-8 rounded-3xl shadow-2xl border border-purple-100 animate-subtle-glow">
+              <Cake className="h-24 w-24 text-purple-600" />
             </div>
           </div>
-          <h1 className="text-4xl md:text-6xl font-bold text-purple-600 mb-4">
-            Dog Birthday Card Generator
+
+          {/* Title */}
+          <h1 className="text-5xl md:text-7xl font-bold gradient-text mb-6 leading-tight">
+            🐕 Dog Birthday Card Generator 🎂
           </h1>
-          <p className="text-xl text-gray-700 max-w-2xl mx-auto">
-            Transform your beloved pup into an adorable animated character dancing to the birthday song!
-            You'll receive the final video via email.
+          
+          {/* Subtitle */}
+          <p className="text-xl md:text-2xl text-gray-700 max-w-3xl mx-auto leading-relaxed font-medium mb-8">
+            Transform your beloved pup into an adorable{" "}
+            <span className="text-purple-600 font-bold">animated character</span>{" "}
+            dancing to the birthday song! ✨
+            <br />
+            <span className="text-lg text-gray-600 mt-2 block">You'll receive the magical video via email 📧</span>
           </p>
+          
+          {/* Feature badges */}
+          <div className="flex flex-wrap justify-center gap-4">
+            <div className="bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-3 shadow-lg border border-purple-100">
+              <span className="text-purple-600 font-semibold">🎵 AI-Powered</span>
+            </div>
+            <div className="bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-3 shadow-lg border border-pink-100">
+              <span className="text-pink-600 font-semibold">⚡ 2-3 Minutes</span>
+            </div>
+            <div className="bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-3 shadow-lg border border-blue-100">
+              <span className="text-blue-600 font-semibold">💌 Email Delivery</span>
+            </div>
+          </div>
         </div>
 
-        <Card className="w-full max-w-2xl p-6 shadow-xl bg-white rounded-lg border border-purple-100">
-          {currentStep === "upload" && <UploadForm onSubmit={handleSubmit} />}
+        {/* Main Card */}
+        <Card className="w-full max-w-4xl mx-auto mb-16 shadow-2xl border-0 overflow-hidden">
+          <div className="bg-gradient-to-r from-purple-500 to-pink-500 p-1 rounded-2xl">
+            <div className="bg-white rounded-2xl">
+              <div className="p-8 md:p-12">
+                {currentStep === "upload" && <UploadForm onSubmit={handleSubmit} />}
 
-          {currentStep === "processing" && (
-            <ProcessingStatus stage={processingStage} />
-          )}
-          
-          {currentStep === "complete" && (
-            <div className="text-center p-6">
-                <MailCheck className="h-16 w-16 text-green-500 mx-auto mb-4" />
-                <h2 className="text-2xl font-bold text-purple-600 mb-3">Video Sent!</h2>
-                <p className="text-gray-700 mb-6">
-                    Your dog's birthday video has been created and a link to it has been sent to your email address.
-                    Please check your inbox (and spam folder, just in case!).
-                </p>
-                {resultUrl && (
-                    <p className="text-sm text-gray-500 mb-6">
-                        Direct link (for reference): <a href={resultUrl} target="_blank" rel="noopener noreferrer" className="text-purple-500 hover:underline">{resultUrl}</a>
-                    </p>
+                {currentStep === "processing" && (
+                  <div className="text-center">
+                    <ProcessingStatus stage={processingStage} />
+                    <div className="mt-8">
+                      <div className="spinner mx-auto mb-4"></div>
+                      <p className="text-gray-600 text-lg">
+                        🎨 Creating magic for your furry friend...
+                      </p>
+                    </div>
+                  </div>
                 )}
-                <Button 
-                    onClick={resetForm} 
-                    className="bg-purple-600 hover:bg-purple-700"
-                >
-                    Create Another Card
-                </Button>
-            </div>
-          )}
+                
+                {currentStep === "complete" && (
+                  <div className="text-center p-8">
+                    <div className="mb-8">
+                      <div className="bg-green-100 p-6 rounded-full w-32 h-32 flex items-center justify-center mx-auto mb-6">
+                        <MailCheck className="h-16 w-16 text-green-600" />
+                      </div>
+                    </div>
+                    <h2 className="text-4xl font-bold gradient-text mb-6">🎉 Video Sent! 🎉</h2>
+                    <p className="text-xl text-gray-700 mb-8 leading-relaxed">
+                      Your dog's birthday video has been created and a link has been sent to your email! 
+                      <br />
+                      <span className="text-purple-600 font-semibold mt-2 block">Check your inbox (and spam folder, just in case!) 📬</span>
+                    </p>
+                    {resultUrl && (
+                      <div className="bg-purple-50 p-6 rounded-xl mb-8 border border-purple-200">
+                        <p className="text-sm text-gray-600 mb-3 font-medium">Direct link for reference:</p>
+                        <a href={resultUrl} target="_blank" rel="noopener noreferrer" 
+                           className="text-purple-600 hover:text-purple-800 underline break-all text-sm">
+                          {resultUrl}
+                        </a>
+                      </div>
+                    )}
+                    <Button 
+                      onClick={resetForm} 
+                      className="btn-primary text-white font-bold py-4 px-8 text-lg rounded-2xl"
+                    >
+                      🐾 Create Another Card 🐾
+                    </Button>
+                  </div>
+                )}
 
-          {currentStep === "failed" && (
-            <div className="text-center p-6">
-              <div className="text-red-500 text-xl mb-4">
-                {errorMessage || "Sorry, something went wrong. Please try again."}
+                {currentStep === "failed" && (
+                  <div className="text-center p-8">
+                    <div className="text-red-600 text-xl mb-8 bg-red-50 p-6 rounded-xl border border-red-200">
+                      😔 {errorMessage || "Sorry, something went wrong. Please try again."}
+                    </div>
+                    <Button 
+                      onClick={resetForm} 
+                      className="btn-primary text-white font-bold py-4 px-8 text-lg rounded-2xl"
+                    >
+                      🔄 Try Again 🔄
+                    </Button>
+                  </div>
+                )}
               </div>
-              <Button 
-                onClick={resetForm} 
-                className="bg-purple-600 hover:bg-purple-700"
-              >
-                Try Again
-              </Button>
             </div>
-          )}
+          </div>
         </Card>
 
-        <div className="mt-16 text-center">
-          <h2 className="text-2xl font-bold text-purple-600 mb-6">
-            How It Works
+        {/* How It Works Section */}
+        <div className="text-center mb-16">
+          <h2 className="text-4xl font-bold gradient-text mb-4">
+            ✨ How It Works ✨
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-4xl mx-auto">
-            <div className="p-6 bg-white rounded-lg shadow-md border border-purple-100">
-              <div className="bg-purple-100 p-4 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
-                <Upload className="h-8 w-8 text-purple-600" />
+          <p className="text-xl text-gray-600 mb-12">Simple, fast, and absolutely adorable!</p>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="card-hover bg-white rounded-3xl p-8 shadow-xl border border-purple-100">
+              <div className="bg-gradient-to-br from-purple-100 to-purple-200 p-6 rounded-2xl w-20 h-20 flex items-center justify-center mx-auto mb-6">
+                <Upload className="h-10 w-10 text-purple-600" />
               </div>
-              <h3 className="font-bold text-lg mb-3 text-purple-700">1. Upload & Email</h3>
-              <p className="text-gray-600">
+              <h3 className="font-bold text-2xl mb-4 text-purple-700">1. Upload & Email 📸</h3>
+              <p className="text-gray-600 text-lg leading-relaxed">
                 Select a dog photo, add a birthday message, and provide your email address.
               </p>
             </div>
-            <div className="p-6 bg-white rounded-lg shadow-md border border-purple-100">
-              <div className="bg-purple-100 p-4 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
-                <Music className="h-8 w-8 text-purple-600" />
+            
+            <div className="card-hover bg-white rounded-3xl p-8 shadow-xl border border-pink-100">
+              <div className="bg-gradient-to-br from-pink-100 to-pink-200 p-6 rounded-2xl w-20 h-20 flex items-center justify-center mx-auto mb-6">
+                <Music className="h-10 w-10 text-pink-600" />
               </div>
-              <h3 className="font-bold text-lg mb-3 text-purple-700">2. AI Magic</h3>
-              <p className="text-gray-600">
+              <h3 className="font-bold text-2xl mb-4 text-pink-700">2. AI Magic 🤖</h3>
+              <p className="text-gray-600 text-lg leading-relaxed">
                 Our AI transforms your photo, animates your dog, and adds festive birthday music.
               </p>
             </div>
-            <div className="p-6 bg-white rounded-lg shadow-md border border-purple-100">
-              <div className="bg-purple-100 p-4 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
-                <Gift className="h-8 w-8 text-purple-600" />
+            
+            <div className="card-hover bg-white rounded-3xl p-8 shadow-xl border border-green-100">
+              <div className="bg-gradient-to-br from-green-100 to-green-200 p-6 rounded-2xl w-20 h-20 flex items-center justify-center mx-auto mb-6">
+                <Gift className="h-10 w-10 text-green-600" />
               </div>
-              <h3 className="font-bold text-lg mb-3 text-purple-700">3. Receive & Share</h3>
-              <p className="text-gray-600">
+              <h3 className="font-bold text-2xl mb-4 text-green-700">3. Receive & Share 🎁</h3>
+              <p className="text-gray-600 text-lg leading-relaxed">
                 You'll get an email with a link to your unique video, ready to download and share!
               </p>
             </div>
           </div>
         </div>
         
+        {/* Preview Section */}
         {(currentStep === "upload" || currentStep === "processing") && (
-          <div className="mt-12 mb-6 p-6 bg-white rounded-lg shadow-md max-w-4xl border border-purple-100">
-            <h2 className="text-xl font-bold text-purple-700 mb-3">Preview Example</h2>
-            <div className="aspect-video bg-gray-100 rounded-lg flex items-center justify-center">
-              <div className="text-center p-4">
-                <p className="text-gray-500">A preview of your dog's dancing animation will appear here after processing.</p>
+          <div className="mb-16">
+            <div className="bg-white rounded-3xl shadow-xl p-8 border border-purple-100">
+              <h2 className="text-3xl font-bold gradient-text mb-6 text-center">🎬 Preview Example</h2>
+              <div className="aspect-video bg-gradient-to-br from-purple-100 to-pink-100 rounded-2xl flex items-center justify-center">
+                <div className="text-center p-8">
+                  <Cake className="h-16 w-16 text-purple-500 mx-auto mb-4" />
+                  <p className="text-purple-600 text-xl font-semibold mb-2">
+                    🎵 A preview of your dog's dancing animation will appear here after processing! 🕺
+                  </p>
+                  <p className="text-gray-500">Get ready for some serious cuteness! 🥰</p>
+                </div>
               </div>
             </div>
           </div>
         )}
+
+        {/* Footer */}
+        <div className="text-center">
+          <p className="text-gray-500 text-lg">
+            Made with 💖 for dog lovers everywhere • Powered by AI ✨
+          </p>
+        </div>
       </div>
     </main>
   )
-} 
+}

@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useState, useRef } from "react"
-import { Upload, X, Camera, Image, ArrowRight, MessageSquare, Mail } from "lucide-react"
+import { Upload, X, Camera, ArrowRight, MessageSquare, Mail } from "lucide-react"
 import { Button } from "./ui/button"
 import { Textarea } from "./ui/textarea"
 import { Label } from "./ui/label"
@@ -103,29 +103,32 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="text-center mb-4">
-        <h2 className="text-2xl font-bold text-purple-600 mb-1">
-          Create Your Dog's Birthday Card
+    <form onSubmit={handleSubmit} className="space-y-8">
+      {/* Header */}
+      <div className="text-center mb-8">
+        <h2 className="text-3xl font-bold gradient-text mb-3">
+          🎨 Create Your Dog's Birthday Card 🎂
         </h2>
-        <p className="text-gray-600">Fill out the form below to get started!</p>
+        <p className="text-lg text-gray-600">Fill out the form below to get started!</p>
       </div>
       
-      <div className="space-y-3">
-        <Label htmlFor="dogPhoto" className="text-lg font-medium text-purple-800 flex items-center gap-2">
-          <Camera className="h-5 w-5" /> Upload a Photo of Your Dog
+      {/* Photo upload section */}
+      <div className="space-y-4">
+        <Label htmlFor="dogPhoto" className="text-xl font-bold text-purple-800 flex items-center gap-2">
+          <Camera className="h-6 w-6" /> 📷 Upload a Photo of Your Dog
         </Label>
 
         {!previewUrl ? (
           <div
-            className="border-2 border-dashed border-purple-400 bg-purple-50 rounded-lg p-8 text-center cursor-pointer hover:bg-purple-100 transition-colors"
+            className="border-2 border-dashed border-purple-300 bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl p-12 text-center cursor-pointer hover:border-purple-400 hover:bg-gradient-to-br hover:from-purple-100 hover:to-pink-100 transition-all duration-200"
             onClick={() => fileInputRef.current?.click()}
           >
-            <div className="bg-white w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3 shadow-md">
-              <Upload className="h-8 w-8 text-purple-500" />
+            <div className="bg-gradient-to-br from-purple-500 to-pink-500 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
+              <Upload className="h-10 w-10 text-white" />
             </div>
-            <p className="text-purple-700 font-medium mb-1">Click to upload or drag and drop</p>
-            <p className="text-sm text-purple-600">JPG, PNG (Max 5MB)</p>
+            <p className="text-purple-700 font-bold text-lg mb-2">📤 Click to upload or drag and drop</p>
+            <p className="text-purple-600 text-base">JPG, PNG (Max 5MB) • Let's see that adorable face! 🐕</p>
+            
             <input
               id="dogPhoto"
               ref={fileInputRef}
@@ -136,45 +139,50 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
             />
           </div>
         ) : (
-          <div className="relative rounded-lg overflow-hidden border-2 border-purple-300 shadow-md">
+          <div className="relative rounded-2xl overflow-hidden border-4 border-purple-300 shadow-xl bg-white">
             <img
               src={previewUrl || "/placeholder.svg"}
               alt="Dog preview"
-              className="w-full h-56 object-cover"
+              className="w-full h-64 object-cover"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-purple-900/60 to-transparent flex items-end">
-              <div className="p-3 text-white">
-                <p className="font-medium">Your dog looks great!</p>
-                <p className="text-sm text-purple-100">Ready to become an animated star</p>
+            <div className="absolute inset-0 bg-gradient-to-t from-purple-900/70 via-transparent to-transparent flex items-end">
+              <div className="p-6 text-white w-full">
+                <p className="font-bold text-lg mb-1">Your dog looks absolutely amazing! 🌟</p>
+                <p className="text-purple-200">Ready to become an animated dancing star! 💃</p>
               </div>
             </div>
             <button
               type="button"
               onClick={clearFile}
-              className="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full hover:bg-red-600 shadow-md"
+              className="absolute top-4 right-4 bg-red-500 text-white p-2 rounded-full hover:bg-red-600 shadow-lg transition-all"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </button>
           </div>
         )}
       </div>
 
-      <div className="space-y-3">
-        <Label htmlFor="message" className="text-lg font-medium text-purple-800 flex items-center gap-2">
-          <MessageSquare className="h-5 w-5" /> Birthday Message
+      {/* Message section */}
+      <div className="space-y-4">
+        <Label htmlFor="message" className="text-xl font-bold text-purple-800 flex items-center gap-2">
+          <MessageSquare className="h-6 w-6" /> 💬 Birthday Message
         </Label>
         <Textarea
           id="message"
-          placeholder="Write a heartfelt birthday wish here..."
+          placeholder="🎉 Write a heartfelt birthday wish here... Make it special! ✨"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          className="min-h-[100px] resize-y border-2 border-purple-300 focus:border-purple-500 rounded-lg p-3"
+          className="min-h-[120px] resize-y border-2 border-purple-300 focus:border-purple-500 hover:border-purple-400 rounded-xl p-4 text-lg bg-gradient-to-br from-white to-purple-50 focus:from-white focus:to-pink-50 transition-all"
         />
+        <p className="text-sm text-purple-600 bg-purple-50 p-3 rounded-lg border border-purple-200">
+          💡 Tip: The more personal, the better! Mention their favorite treats or toys!
+        </p>
       </div>
 
-      <div className="space-y-3">
-        <Label htmlFor="userEmail" className="text-lg font-medium text-purple-800 flex items-center gap-2">
-          <Mail className="h-5 w-5" /> Your Email Address
+      {/* Email section */}
+      <div className="space-y-4">
+        <Label htmlFor="userEmail" className="text-xl font-bold text-purple-800 flex items-center gap-2">
+          <Mail className="h-6 w-6" /> 📧 Your Email Address
         </Label>
         <Input
           id="userEmail"
@@ -182,24 +190,42 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
           placeholder="your.email@example.com"
           value={userEmail}
           onChange={(e) => setUserEmail(e.target.value)}
-          className="border-2 border-purple-300 focus:border-purple-500 rounded-lg p-3"
+          className="border-2 border-purple-300 focus:border-purple-500 hover:border-purple-400 rounded-xl p-4 text-lg bg-gradient-to-r from-white to-purple-50 focus:from-white focus:to-pink-50 transition-all"
         />
-        <p className="text-xs text-purple-600">We'll send the final video link to this email.</p>
+        <p className="text-sm text-purple-600 bg-purple-50 p-3 rounded-lg border border-purple-200">
+          📬 We'll send the final magical video link to this email address!
+        </p>
       </div>
 
+      {/* Error message */}
       {error && (
-        <div className="text-red-500 text-sm p-3 bg-red-50 border border-red-200 rounded-lg">
-          {error}
+        <div className="text-red-600 text-base p-4 bg-gradient-to-r from-red-50 to-pink-50 border-2 border-red-200 rounded-xl">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">😅</span>
+            <span className="font-semibold">{error}</span>
+          </div>
         </div>
       )}
 
-      <Button
-        type="submit"
-        className="w-full bg-purple-600 hover:bg-purple-700 text-lg py-3 rounded-lg shadow-md"
-        disabled={!selectedFile || !message.trim() || !userEmail.trim() || !isValidEmail(userEmail)}
-      >
-        Create My Dog's Birthday Card! <ArrowRight className="ml-2 h-5 w-5" />
-      </Button>
+      {/* Submit button */}
+      <div className="pt-4">
+        <Button
+          type="submit"
+          className="w-full btn-primary text-white text-xl font-bold py-6 rounded-2xl shadow-xl"
+          disabled={!selectedFile || !message.trim() || !userEmail.trim() || !isValidEmail(userEmail)}
+        >
+          <div className="flex items-center justify-center gap-3">
+            <span>🎬 Create My Dog's Birthday Video! 🎂</span>
+            <ArrowRight className="h-6 w-6" />
+          </div>
+        </Button>
+        
+        {(selectedFile && message.trim() && userEmail.trim() && isValidEmail(userEmail)) && (
+          <p className="text-center text-purple-600 mt-4 font-semibold">
+            🚀 Ready to launch! Click the button above to start the magic! ✨
+          </p>
+        )}
+      </div>
     </form>
   )
 } 

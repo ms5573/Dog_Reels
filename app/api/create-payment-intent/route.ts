@@ -6,6 +6,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { email, dogName } = body
 
+    console.log('Creating payment intent with:', {
+      amount: PAYMENT_AMOUNT,
+      email,
+      dogName,
+      stripeKeyPrefix: process.env.STRIPE_SECRET_KEY?.substring(0, 7) // Log just the prefix for security
+    })
+
     // Create a payment intent
     const paymentIntent = await stripe.paymentIntents.create({
       amount: PAYMENT_AMOUNT, // Amount in cents
@@ -18,7 +25,18 @@ export async function POST(request: NextRequest) {
       },
       automatic_payment_methods: {
         enabled: true,
+        allow_redirects: 'always'
       },
+      confirm: false, // Don't confirm immediately
+      capture_method: 'automatic',
+      setup_future_usage: 'off_session'
+    })
+
+    console.log('Payment intent created:', {
+      id: paymentIntent.id,
+      status: paymentIntent.status,
+      amount: paymentIntent.amount,
+      client_secret: paymentIntent.client_secret?.substring(0, 10) + '...'
     })
 
     return NextResponse.json({
@@ -28,7 +46,12 @@ export async function POST(request: NextRequest) {
       currency: 'usd'
     })
   } catch (error: any) {
-    console.error('Error creating payment intent:', error)
+    console.error('Error creating payment intent:', {
+      message: error.message,
+      type: error.type,
+      code: error.code,
+      stripeKeyPrefix: process.env.STRIPE_SECRET_KEY?.substring(0, 7)
+    })
     return NextResponse.json(
       { 
         success: false, 

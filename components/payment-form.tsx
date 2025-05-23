@@ -51,7 +51,8 @@ export default function PaymentForm({ email, dogName, onPaymentSuccess, onPaymen
         throw new Error(apiError || 'Failed to create payment intent')
       }
 
-      // Confirm payment
+      // Confirm payment immediately after creation
+      console.log('Confirming payment with client secret:', clientSecret.substring(0, 10) + '...')
       const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
         payment_method: {
           card: cardElement,
@@ -59,19 +60,45 @@ export default function PaymentForm({ email, dogName, onPaymentSuccess, onPaymen
             email: email,
           },
         },
+        return_url: window.location.origin, // Add return URL for 3D Secure
+      })
+
+      console.log('Payment confirmation result:', {
+        error: stripeError ? {
+          message: stripeError.message,
+          type: stripeError.type,
+          code: stripeError.code
+        } : null,
+        paymentIntent: paymentIntent ? {
+          id: paymentIntent.id,
+          status: paymentIntent.status,
+          amount: paymentIntent.amount
+        } : null
       })
 
       if (stripeError) {
-        throw new Error(stripeError.message || 'Payment failed')
+        if (stripeError.type === 'card_error') {
+          throw new Error(stripeError.message || 'Your card was declined')
+        } else {
+          throw new Error(stripeError.message || 'Payment failed')
+        }
       }
 
       if (paymentIntent?.status === 'succeeded') {
+        onPaymentSuccess(paymentIntent.id)
+      } else if (paymentIntent?.status === 'requires_action') {
+        // Handle 3D Secure authentication
+        const { error: actionError } = await stripe.handleCardAction(clientSecret)
+        if (actionError) {
+          throw new Error(actionError.message || '3D Secure authentication failed')
+        }
         onPaymentSuccess(paymentIntent.id)
       } else {
         throw new Error('Payment was not completed successfully')
       }
     } catch (err: any) {
       const errorMessage = err.message || 'An unexpected error occurred'
+      console.error('Payment error:', errorMessage)
       setError(errorMessage)
       onPaymentError(errorMessage)
     } finally {

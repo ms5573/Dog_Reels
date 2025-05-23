@@ -1,0 +1,14 @@
+# Add these lines to your .env.local file:
+
+# Stripe Configuration
+STRIPE_SECRET_KEY=sk_test_REPLACE_WITH_YOUR_SECRET_KEY
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_REPLACE_WITH_YOUR_PUBLISHABLE_KEY
+
+# Payment Configuration
+PAYMENT_AMOUNT=499  # Amount in cents ($4.99)
+
+# Instructions:
+# 1. Go to https://dashboard.stripe.com/test/apikeys
+# 2. Copy your "Publishable key" and replace REPLACE_WITH_YOUR_PUBLISHABLE_KEY
+# 3. Copy your "Secret key" and replace REPLACE_WITH_YOUR_SECRET_KEY
+# 4. Add these lines to your .env.local file 

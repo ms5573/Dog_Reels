@@ -2,15 +2,18 @@
 
 // Main page component for Dog Birthday Card Generator
 import { useState, useEffect } from "react"
-import { Upload, MessageSquare, Gift, Cake, Music, MailCheck } from "lucide-react"
+import { Upload, MessageSquare, Gift, Cake, Music, MailCheck, CreditCard } from "lucide-react"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
+import { Elements } from '@stripe/react-stripe-js'
+import { stripePromise, PAYMENT_AMOUNT_DOLLARS } from '@/lib/stripe-client'
 import UploadForm from "../components/upload-form"
+import PaymentForm from "../components/payment-form"
 import ProcessingStatus from "../components/processing-status"
 import ResultDisplay from "../components/result-display"
 
 export default function Home() {
-  const [currentStep, setCurrentStep] = useState<"upload" | "processing" | "complete" | "failed">("upload")
+  const [currentStep, setCurrentStep] = useState<"upload" | "payment" | "processing" | "complete" | "failed">("upload")
   const [taskId, setTaskId] = useState<string | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [cloudfrontUrl, setCloudfrontUrl] = useState<string | null>(null)
@@ -19,6 +22,12 @@ export default function Home() {
   const [retryCount, setRetryCount] = useState(0)
   const [pollingActive, setPollingActive] = useState(false)
   const [videoVerified, setVideoVerified] = useState(false)
+
+  // Form data storage
+  const [formData, setFormData] = useState<FormData | null>(null)
+  const [userEmail, setUserEmail] = useState<string>("")
+  const [dogName, setDogName] = useState<string>("")
+  const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null)
 
   // Effect to manage polling when taskId changes
   useEffect(() => {
@@ -32,10 +41,34 @@ export default function Home() {
     };
   }, [taskId, currentStep]);
 
-  const handleSubmit = async (formData: FormData) => {
+  const handleUploadSubmit = async (uploadFormData: FormData) => {
     try {
+      // Extract form data for payment step
+      const email = uploadFormData.get('email') as string
+      const message = uploadFormData.get('message') as string
+      const dogNameFromMessage = message ? message.split(' ')[0] : 'your pup' // Simple extraction
+
+      setFormData(uploadFormData)
+      setUserEmail(email)
+      setDogName(dogNameFromMessage)
+      setCurrentStep("payment")
+    } catch (error: any) {
+      console.error("Error preparing form data:", error)
+      setCurrentStep("failed")
+      setErrorMessage(error.message || "Failed to prepare form data. Please try again.")
+    }
+  }
+
+  const handlePaymentSuccess = async (paymentId: string) => {
+    setPaymentIntentId(paymentId)
+    
+    try {
+      if (!formData) {
+        throw new Error("Form data not found")
+      }
+
       setCurrentStep("processing")
-      setProcessingStage("Uploading your photo and details...")
+      setProcessingStage("Payment confirmed! Starting video generation...")
       setRetryCount(0)
       setPollingActive(false)
       setVideoVerified(false)
@@ -64,8 +97,13 @@ export default function Home() {
     } catch (error: any) {
       console.error("Error submitting form:", error)
       setCurrentStep("failed")
-      setErrorMessage(error.message || "Failed to upload. Please try again.")
+      setErrorMessage(error.message || "Failed to start video generation. Please try again.")
     }
+  }
+
+  const handlePaymentError = (error: string) => {
+    setCurrentStep("failed")
+    setErrorMessage(`Payment failed: ${error}`)
   }
 
   const pollStatus = async (id: string) => {
@@ -160,6 +198,10 @@ export default function Home() {
     setProcessingStage("Uploading...");
     setRetryCount(0);
     setPollingActive(false);
+    setFormData(null);
+    setUserEmail("");
+    setDogName("");
+    setPaymentIntentId(null);
   };
 
   return (
@@ -210,7 +252,43 @@ export default function Home() {
           <div className="bg-gradient-to-r from-purple-500 to-pink-500 p-1 rounded-2xl">
             <div className="bg-white rounded-2xl">
               <div className="p-8 md:p-12">
-                {currentStep === "upload" && <UploadForm onSubmit={handleSubmit} />}
+                {currentStep === "upload" && <UploadForm onSubmit={handleUploadSubmit} />}
+
+                {currentStep === "payment" && (
+                  <div className="text-center">
+                    <div className="mb-8">
+                      <div className="bg-gradient-to-br from-green-100 to-green-200 p-6 rounded-full w-20 h-20 flex items-center justify-center mx-auto mb-6">
+                        <CreditCard className="h-10 w-10 text-green-600" />
+                      </div>
+                      <h2 className="text-3xl font-bold gradient-text mb-4">💳 Secure Payment</h2>
+                      <p className="text-gray-600 text-lg mb-2">
+                        Almost there! Just ${PAYMENT_AMOUNT_DOLLARS} to create your dog's magical birthday video
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        Video will be generated after payment confirmation
+                      </p>
+                    </div>
+                    
+                    <Elements stripe={stripePromise}>
+                      <PaymentForm 
+                        email={userEmail}
+                        dogName={dogName}
+                        onPaymentSuccess={handlePaymentSuccess}
+                        onPaymentError={handlePaymentError}
+                      />
+                    </Elements>
+                    
+                    <div className="mt-6">
+                      <Button 
+                        onClick={() => setCurrentStep("upload")} 
+                        variant="outline"
+                        className="text-gray-600 hover:text-gray-800"
+                      >
+                        ← Back to Upload
+                      </Button>
+                    </div>
+                  </div>
+                )}
 
                 {currentStep === "processing" && (
                   <div className="text-center">
@@ -280,33 +358,43 @@ export default function Home() {
           </h2>
           <p className="text-xl text-gray-600 mb-12">Simple, fast, and absolutely adorable!</p>
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div className="card-hover bg-white rounded-3xl p-8 shadow-xl border border-purple-100">
-              <div className="bg-gradient-to-br from-purple-100 to-purple-200 p-6 rounded-2xl w-20 h-20 flex items-center justify-center mx-auto mb-6">
-                <Upload className="h-10 w-10 text-purple-600" />
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="card-hover bg-white rounded-3xl p-6 shadow-xl border border-purple-100">
+              <div className="bg-gradient-to-br from-purple-100 to-purple-200 p-4 rounded-2xl w-16 h-16 flex items-center justify-center mx-auto mb-4">
+                <Upload className="h-8 w-8 text-purple-600" />
               </div>
-              <h3 className="font-bold text-2xl mb-4 text-purple-700">1. Upload & Email 📸</h3>
-              <p className="text-gray-600 text-lg leading-relaxed">
+              <h3 className="font-bold text-xl mb-3 text-purple-700">1. Upload 📸</h3>
+              <p className="text-gray-600 text-sm leading-relaxed">
                 Select a dog photo, add a birthday message, and provide your email address.
               </p>
             </div>
             
-            <div className="card-hover bg-white rounded-3xl p-8 shadow-xl border border-pink-100">
-              <div className="bg-gradient-to-br from-pink-100 to-pink-200 p-6 rounded-2xl w-20 h-20 flex items-center justify-center mx-auto mb-6">
-                <Music className="h-10 w-10 text-pink-600" />
+            <div className="card-hover bg-white rounded-3xl p-6 shadow-xl border border-green-100">
+              <div className="bg-gradient-to-br from-green-100 to-green-200 p-4 rounded-2xl w-16 h-16 flex items-center justify-center mx-auto mb-4">
+                <CreditCard className="h-8 w-8 text-green-600" />
               </div>
-              <h3 className="font-bold text-2xl mb-4 text-pink-700">2. AI Magic 🤖</h3>
-              <p className="text-gray-600 text-lg leading-relaxed">
+              <h3 className="font-bold text-xl mb-3 text-green-700">2. Pay 💳</h3>
+              <p className="text-gray-600 text-sm leading-relaxed">
+                Secure payment through Stripe. Your video is generated instantly after confirmation.
+              </p>
+            </div>
+            
+            <div className="card-hover bg-white rounded-3xl p-6 shadow-xl border border-pink-100">
+              <div className="bg-gradient-to-br from-pink-100 to-pink-200 p-4 rounded-2xl w-16 h-16 flex items-center justify-center mx-auto mb-4">
+                <Music className="h-8 w-8 text-pink-600" />
+              </div>
+              <h3 className="font-bold text-xl mb-3 text-pink-700">3. AI Magic 🤖</h3>
+              <p className="text-gray-600 text-sm leading-relaxed">
                 Our AI transforms your photo, animates your dog, and adds festive birthday music.
               </p>
             </div>
             
-            <div className="card-hover bg-white rounded-3xl p-8 shadow-xl border border-green-100">
-              <div className="bg-gradient-to-br from-green-100 to-green-200 p-6 rounded-2xl w-20 h-20 flex items-center justify-center mx-auto mb-6">
-                <Gift className="h-10 w-10 text-green-600" />
+            <div className="card-hover bg-white rounded-3xl p-6 shadow-xl border border-blue-100">
+              <div className="bg-gradient-to-br from-blue-100 to-blue-200 p-4 rounded-2xl w-16 h-16 flex items-center justify-center mx-auto mb-4">
+                <Gift className="h-8 w-8 text-blue-600" />
               </div>
-              <h3 className="font-bold text-2xl mb-4 text-green-700">3. Receive & Share 🎁</h3>
-              <p className="text-gray-600 text-lg leading-relaxed">
+              <h3 className="font-bold text-xl mb-3 text-blue-700">4. Receive & Share 🎁</h3>
+              <p className="text-gray-600 text-sm leading-relaxed">
                 You'll get an email with a link to your unique video, ready to download and share!
               </p>
             </div>

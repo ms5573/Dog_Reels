@@ -9,12 +9,12 @@ import { PAYMENT_AMOUNT_DOLLARS } from '@/lib/stripe-client'
 
 interface PaymentFormProps {
   email: string
-  dogName?: string
+  petName?: string
   onPaymentSuccess: (paymentIntentId: string) => void
   onPaymentError: (error: string) => void
 }
 
-export default function PaymentForm({ email, dogName, onPaymentSuccess, onPaymentError }: PaymentFormProps) {
+export default function PaymentForm({ email, petName, onPaymentSuccess, onPaymentError }: PaymentFormProps) {
   const stripe = useStripe()
   const elements = useElements()
   const [isProcessing, setIsProcessing] = useState(false)
@@ -42,7 +42,7 @@ export default function PaymentForm({ email, dogName, onPaymentSuccess, onPaymen
       const response = await fetch('/api/create-payment-intent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, dogName })
+        body: JSON.stringify({ email, petName })
       })
 
       const { success, clientSecret, error: apiError } = await response.json()
@@ -133,18 +133,18 @@ export default function PaymentForm({ email, dogName, onPaymentSuccess, onPaymen
           </div>
           <h3 className="text-2xl font-bold text-purple-700 mb-2">Secure Payment</h3>
           <p className="text-gray-600">
-            Complete your payment to create your dog's magical birthday video
+            Complete your payment to create your pet's magical reel
           </p>
         </div>
 
         {/* Order Summary */}
         <div className="bg-purple-50 rounded-xl p-4 mb-6 border border-purple-200">
           <div className="flex justify-between items-center mb-2">
-            <span className="text-gray-700 font-medium">Dog Birthday Video</span>
+            <span className="text-gray-700 font-medium">Pet Reel Video</span>
             <span className="text-2xl font-bold text-purple-600">${PAYMENT_AMOUNT_DOLLARS}</span>
           </div>
-          {dogName && (
-            <p className="text-sm text-gray-600">For: {dogName} 🐕</p>
+          {petName && (
+            <p className="text-sm text-gray-600">For: {petName} 🐾</p>
           )}
           <p className="text-sm text-gray-600">Email: {email}</p>
         </div>

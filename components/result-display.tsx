@@ -99,7 +99,7 @@ export default function ResultDisplay({ resultUrl, cloudfrontUrl }: ResultDispla
     // Create an anchor element and simulate a click
     const a = document.createElement('a');
     a.href = activeVideoUrl;
-    a.download = 'dog-birthday-card.mp4';
+    a.download = 'pet-reel.mp4';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -120,9 +120,9 @@ export default function ResultDisplay({ resultUrl, cloudfrontUrl }: ResultDispla
         </div>
       </div>
 
-      <h3 className="text-2xl font-bold text-purple-700 mb-2">Your Birthday Card is Ready!</h3>
-      <p className="text-gray-600 mb-6 max-w-md">
-        Your personalized dog birthday card has been created successfully. You can view it, download it, or share it with friends and family.
+      <h3 className="text-2xl font-bold text-purple-700 mb-2">Your Pet Reel is Ready!</h3>
+      <p className="text-gray-600 mb-6">
+        Your personalized pet reel has been created successfully. You can view it, download it, or share it with friends and family.
       </p>
 
       {/* Video Source Toggle - only show if CloudFront URL is available */}

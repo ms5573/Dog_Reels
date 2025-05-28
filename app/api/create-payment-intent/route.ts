@@ -4,12 +4,12 @@ import { stripe, PAYMENT_AMOUNT } from '@/lib/stripe'
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { email, dogName } = body
+    const { email, petName } = body
 
     console.log('Creating payment intent with:', {
       amount: PAYMENT_AMOUNT,
       email,
-      dogName,
+      petName,
       stripeKeyPrefix: process.env.STRIPE_SECRET_KEY?.substring(0, 7) // Log just the prefix for security
     })
 
@@ -17,11 +17,11 @@ export async function POST(request: NextRequest) {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: PAYMENT_AMOUNT, // Amount in cents
       currency: 'usd',
-      description: `Dog Birthday Video for ${dogName || 'your pup'}`,
+      description: `Pet Reel Video for ${petName || 'your pet'}`,
       metadata: {
         email: email || 'unknown',
-        dogName: dogName || 'unknown',
-        product: 'dog-birthday-video'
+        petName: petName || 'unknown',
+        product: 'pet-reel-video'
       },
       automatic_payment_methods: {
         enabled: true,

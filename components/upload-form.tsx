@@ -14,7 +14,7 @@ interface UploadFormProps {
 }
 
 export default function UploadForm({ onSubmit }: UploadFormProps) {
-  const [message, setMessage] = useState("")
+  const [action, setAction] = useState("")
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [userEmail, setUserEmail] = useState("")
@@ -75,12 +75,12 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
     setError(null)
 
     if (!selectedFile) {
-      setError("Please select a dog photo")
+      setError("Please select a pet photo")
       return
     }
 
-    if (!message.trim()) {
-      setError("Please enter a birthday message")
+    if (!action.trim()) {
+      setError("Please describe what your pet should be doing in the reel")
       return
     }
 
@@ -95,8 +95,8 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
     }
 
     const formData = new FormData()
-    formData.append("dogPhoto", selectedFile)
-    formData.append("message", message)
+    formData.append("petPhoto", selectedFile)
+    formData.append("action", action)
     formData.append("email", userEmail)
 
     onSubmit(formData)
@@ -107,15 +107,15 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
       {/* Header */}
       <div className="text-center mb-8">
         <h2 className="text-3xl font-bold gradient-text mb-3">
-          🎨 Create Your Dog's Birthday Card 🎂
+          🎨 Create Your Pet's Magical Reel ✨
         </h2>
         <p className="text-lg text-gray-600">Fill out the form below to get started!</p>
       </div>
       
       {/* Photo upload section */}
       <div className="space-y-4">
-        <Label htmlFor="dogPhoto" className="text-xl font-bold text-purple-800 flex items-center gap-2">
-          <Camera className="h-6 w-6" /> 📷 Upload a Photo of Your Dog
+        <Label htmlFor="petPhoto" className="text-xl font-bold text-purple-800 flex items-center gap-2">
+          <Camera className="h-6 w-6" /> 📷 Upload a Photo of Your Pet
         </Label>
 
         {!previewUrl ? (
@@ -127,10 +127,10 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
               <Upload className="h-10 w-10 text-white" />
             </div>
             <p className="text-purple-700 font-bold text-lg mb-2">📤 Click to upload or drag and drop</p>
-            <p className="text-purple-600 text-base">JPG, PNG (Max 5MB) • Let's see that adorable face! 🐕</p>
+            <p className="text-purple-600 text-base">JPG, PNG (Max 5MB) • Let's see that adorable face! 🐾</p>
             
             <input
-              id="dogPhoto"
+              id="petPhoto"
               ref={fileInputRef}
               type="file"
               accept="image/jpeg,image/png,image/gif,image/webp"
@@ -142,13 +142,13 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
           <div className="relative rounded-2xl overflow-hidden border-4 border-purple-300 shadow-xl bg-white">
             <img
               src={previewUrl || "/placeholder.svg"}
-              alt="Dog preview"
+              alt="Pet preview"
               className="w-full h-64 object-cover"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-purple-900/70 via-transparent to-transparent flex items-end">
               <div className="p-6 text-white w-full">
-                <p className="font-bold text-lg mb-1">Your dog looks absolutely amazing! 🌟</p>
-                <p className="text-purple-200">Ready to become an animated dancing star! 💃</p>
+                <p className="font-bold text-lg mb-1">Your pet looks absolutely amazing! 🌟</p>
+                <p className="text-purple-200">Ready to become an animated Studio Ghibli character! ✨</p>
               </div>
             </div>
             <button
@@ -162,20 +162,20 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
         )}
       </div>
 
-      {/* Message section */}
+      {/* Action description section */}
       <div className="space-y-4">
-        <Label htmlFor="message" className="text-xl font-bold text-purple-800 flex items-center gap-2">
-          <MessageSquare className="h-6 w-6" /> 💬 Birthday Message
+        <Label htmlFor="action" className="text-xl font-bold text-purple-800 flex items-center gap-2">
+          <MessageSquare className="h-6 w-6" /> 🎬 What should your pet be doing?
         </Label>
         <Textarea
-          id="message"
-          placeholder="🎉 Write a heartfelt birthday wish here... Make it special! ✨"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
+          id="action"
+          placeholder="🌟 Describe what your pet should be doing in the reel... (e.g., 'running through a magical forest', 'playing with butterflies', 'sleeping under cherry blossoms') ✨"
+          value={action}
+          onChange={(e) => setAction(e.target.value)}
           className="min-h-[120px] resize-y border-2 border-purple-300 focus:border-purple-500 hover:border-purple-400 rounded-xl p-4 text-lg bg-gradient-to-br from-white to-purple-50 focus:from-white focus:to-pink-50 transition-all"
         />
         <p className="text-sm text-purple-600 bg-purple-50 p-3 rounded-lg border border-purple-200">
-          💡 Tip: The more personal, the better! Mention their favorite treats or toys!
+          💡 Tip: Be creative! Think magical, whimsical activities that would look amazing in Studio Ghibli style!
         </p>
       </div>
 
@@ -212,15 +212,15 @@ export default function UploadForm({ onSubmit }: UploadFormProps) {
         <Button
           type="submit"
           className="w-full btn-primary text-white text-xl font-bold py-6 rounded-2xl shadow-xl"
-          disabled={!selectedFile || !message.trim() || !userEmail.trim() || !isValidEmail(userEmail)}
+          disabled={!selectedFile || !action.trim() || !userEmail.trim() || !isValidEmail(userEmail)}
         >
           <div className="flex items-center justify-center gap-3">
-            <span>🎬 Create My Dog's Birthday Video! 🎂</span>
+            <span>🎬 Create My Pet's Magical Reel! ✨</span>
             <ArrowRight className="h-6 w-6" />
           </div>
         </Button>
         
-        {(selectedFile && message.trim() && userEmail.trim() && isValidEmail(userEmail)) && (
+        {(selectedFile && action.trim() && userEmail.trim() && isValidEmail(userEmail)) && (
           <p className="text-center text-purple-600 mt-4 font-semibold">
             🚀 Ready to launch! Click the button above to start the magic! ✨
           </p>

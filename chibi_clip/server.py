@@ -435,7 +435,7 @@ def get_task_status(task_id):
         if status_data.get('status') in ['QUEUED', 'PROCESSING', 'PENDING'] and redis_client:
             try:
                 # Check for results in the results queue
-                result_queue = 'dog_video_results'
+                result_queue = 'pet_video_results'
                 queue_length = redis_client.llen(result_queue)
                 
                 if queue_length:
@@ -502,7 +502,7 @@ def get_task_status(task_id):
         if task_data.get('status') in ['QUEUED', 'PROCESSING', 'PENDING'] and redis_client:
             try:
                 # Check for results in the results queue
-                result_queue = 'dog_video_results'
+                result_queue = 'pet_video_results'
                 queue_length = redis_client.llen(result_queue)
                 
                 if queue_length:

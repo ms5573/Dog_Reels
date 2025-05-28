@@ -36,13 +36,13 @@ export async function POST(request: NextRequest) {
     }
 
     const formData = await request.formData();
-    const dogPhoto = formData.get('dogPhoto') as File;
-    const message = formData.get('message') as string;
+    const petPhoto = formData.get('petPhoto') as File;
+    const action = formData.get('action') as string;
     const email = formData.get('email') as string;
 
-    if (!dogPhoto || !message || !email) {
+    if (!petPhoto || !action || !email) {
       return NextResponse.json(
-        { error: 'Missing required fields (dogPhoto, message, or email)' },
+        { error: 'Missing required fields (petPhoto, action, or email)' },
         { status: 400 }
       );
     }
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
     const taskId = uuidv4();
     
     // Get file buffer
-    const bytes = await dogPhoto.arrayBuffer();
+    const bytes = await petPhoto.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
     // Create a task status file to track progress
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest) {
       const uploadResult = await new Promise<any>((resolve, reject) => {
         cloudinary.uploader.upload_stream(
           {
-            public_id: `dog_cards/${taskId}`,
+            public_id: `pet_reels/${taskId}`,
             overwrite: true,
             resource_type: "image"
           },
@@ -117,14 +117,14 @@ export async function POST(request: NextRequest) {
       const taskData = {
         task_id: taskId,
         photo_url: cloudinaryUrl,  // Changed from photo_path to photo_url
-        product_title: "Dog Birthday Card",
-        product_description: message,
+        product_title: "Pet Reel",
+        product_description: action,
         user_email: email,  // Changed from 'email' to 'user_email'
         created_at: new Date().toISOString()
       };
       
       // Add task to queue
-      const queueName = 'dog_video_tasks';
+      const queueName = 'pet_video_tasks';
       await redis.rPush(queueName, JSON.stringify(taskData));
       
       console.log(`Added task ${taskId} to Redis queue '${queueName}'`);

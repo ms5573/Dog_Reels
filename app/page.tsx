@@ -1,8 +1,8 @@
 "use client"
 
-// Main page component for Dog Birthday Card Generator
+// Main page component for Pet Reel Generator
 import { useState, useEffect } from "react"
-import { Upload, MessageSquare, Gift, Cake, Music, MailCheck, CreditCard } from "lucide-react"
+import { Upload, MessageSquare, Gift, Video, Music, MailCheck, CreditCard } from "lucide-react"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import { Elements } from '@stripe/react-stripe-js'
@@ -26,7 +26,7 @@ export default function Home() {
   // Form data storage
   const [formData, setFormData] = useState<FormData | null>(null)
   const [userEmail, setUserEmail] = useState<string>("")
-  const [dogName, setDogName] = useState<string>("")
+  const [petName, setPetName] = useState<string>("")
   const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null)
 
   // Effect to manage polling when taskId changes
@@ -46,11 +46,11 @@ export default function Home() {
       // Extract form data for payment step
       const email = uploadFormData.get('email') as string
       const message = uploadFormData.get('message') as string
-      const dogNameFromMessage = message ? message.split(' ')[0] : 'your pup' // Simple extraction
+      const petNameFromMessage = message ? message.split(' ')[0] : 'your pet' // Simple extraction
 
       setFormData(uploadFormData)
       setUserEmail(email)
-      setDogName(dogNameFromMessage)
+      setPetName(petNameFromMessage)
       setCurrentStep("payment")
     } catch (error: any) {
       console.error("Error preparing form data:", error)
@@ -200,7 +200,7 @@ export default function Home() {
     setPollingActive(false);
     setFormData(null);
     setUserEmail("");
-    setDogName("");
+    setPetName("");
     setPaymentIntentId(null);
   };
 
@@ -215,22 +215,20 @@ export default function Home() {
           {/* Main icon */}
           <div className="flex justify-center mb-8">
             <div className="bg-white p-8 rounded-3xl shadow-2xl border border-purple-100 animate-subtle-glow">
-              <Cake className="h-24 w-24 text-purple-600" />
+              <Video className="h-24 w-24 text-purple-600" />
             </div>
           </div>
 
           {/* Title */}
           <h1 className="text-5xl md:text-7xl font-bold gradient-text mb-6 leading-tight">
-            🐕 Dog Birthday Card Generator 🎂
+            🐾 Pet Reel Generator 🎂
           </h1>
           
           {/* Subtitle */}
           <p className="text-xl md:text-2xl text-gray-700 max-w-3xl mx-auto leading-relaxed font-medium mb-8">
-            Transform your beloved pup into an adorable{" "}
+            Transform your beloved pet into an adorable{" "}
             <span className="text-purple-600 font-bold">animated character</span>{" "}
-            dancing to the birthday song! ✨
-            <br />
-            <span className="text-lg text-gray-600 mt-2 block">You'll receive the magical video via email 📧</span>
+            in magical Studio Ghibli style! ✨
           </p>
           
           {/* Feature badges */}
@@ -262,7 +260,7 @@ export default function Home() {
                       </div>
                       <h2 className="text-3xl font-bold gradient-text mb-4">💳 Secure Payment</h2>
                       <p className="text-gray-600 text-lg mb-2">
-                        Almost there! Just ${PAYMENT_AMOUNT_DOLLARS} to create your dog's magical birthday video
+                        Almost there! Just ${PAYMENT_AMOUNT_DOLLARS} to create your pet's magical reel
                       </p>
                       <p className="text-sm text-gray-500">
                         Video will be generated after payment confirmation
@@ -272,7 +270,7 @@ export default function Home() {
                     <Elements stripe={stripePromise}>
                       <PaymentForm 
                         email={userEmail}
-                        dogName={dogName}
+                        petName={petName}
                         onPaymentSuccess={handlePaymentSuccess}
                         onPaymentError={handlePaymentError}
                       />
@@ -311,7 +309,7 @@ export default function Home() {
                     </div>
                     <h2 className="text-4xl font-bold gradient-text mb-6">🎉 Video Sent! 🎉</h2>
                     <p className="text-xl text-gray-700 mb-8 leading-relaxed">
-                      Your dog's birthday video has been created and a link has been sent to your email! 
+                      Your pet's magical reel has been created and a link has been sent to your email! 
                       <br />
                       <span className="text-purple-600 font-semibold mt-2 block">Check your inbox (and spam folder, just in case!) 📬</span>
                     </p>
@@ -365,7 +363,7 @@ export default function Home() {
               </div>
               <h3 className="font-bold text-xl mb-3 text-purple-700">1. Upload 📸</h3>
               <p className="text-gray-600 text-sm leading-relaxed">
-                Select a dog photo, add a birthday message, and provide your email address.
+                Select a pet photo, describe what they should be doing, and provide your email address.
               </p>
             </div>
             
@@ -381,11 +379,11 @@ export default function Home() {
             
             <div className="card-hover bg-white rounded-3xl p-6 shadow-xl border border-pink-100">
               <div className="bg-gradient-to-br from-pink-100 to-pink-200 p-4 rounded-2xl w-16 h-16 flex items-center justify-center mx-auto mb-4">
-                <Music className="h-8 w-8 text-pink-600" />
+                <MessageSquare className="h-8 w-8 text-pink-600" />
               </div>
               <h3 className="font-bold text-xl mb-3 text-pink-700">3. AI Magic 🤖</h3>
               <p className="text-gray-600 text-sm leading-relaxed">
-                Our AI transforms your photo, animates your dog, and adds festive birthday music.
+                Our AI transforms your photo into Studio Ghibli style and animates your pet doing the action you described.
               </p>
             </div>
             
@@ -393,7 +391,7 @@ export default function Home() {
               <div className="bg-gradient-to-br from-blue-100 to-blue-200 p-4 rounded-2xl w-16 h-16 flex items-center justify-center mx-auto mb-4">
                 <Gift className="h-8 w-8 text-blue-600" />
               </div>
-              <h3 className="font-bold text-xl mb-3 text-blue-700">4. Receive & Share 🎁</h3>
+              <h3 className="font-bold text-xl mb-3 text-blue-700">4. Receive & Share ��</h3>
               <p className="text-gray-600 text-sm leading-relaxed">
                 You'll get an email with a link to your unique video, ready to download and share!
               </p>
@@ -404,7 +402,7 @@ export default function Home() {
         {/* Footer */}
         <div className="text-center">
           <p className="text-gray-500 text-lg">
-            Made with 💖 for dog lovers everywhere • Powered by AI ✨
+            Made with 💖 for pet lovers everywhere • Powered by AI ✨
           </p>
         </div>
       </div>

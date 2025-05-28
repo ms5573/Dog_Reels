@@ -28,7 +28,7 @@ export default function ProcessingStatus({ stage }: ProcessingStatusProps) {
       <div className="max-w-lg text-center text-gray-700 space-y-4 mb-8">
         <div className="bg-gradient-to-r from-purple-50 to-pink-50 p-6 rounded-2xl border border-purple-200">
           <p className="text-lg leading-relaxed mb-3">
-            🎨 We're creating a custom animated birthday card with your dog. This process may take 
+            🎨 We're creating a custom animated pet reel with your pet. This process may take 
             <span className="font-bold text-purple-600"> 1-3 minutes</span>.
           </p>
           <p className="text-purple-600 font-semibold">

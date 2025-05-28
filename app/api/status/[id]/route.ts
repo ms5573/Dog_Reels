@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
           await redis.connect();
           
           // Check for results in the results queue
-          const resultQueue = 'dog_video_results';
+          const resultQueue = 'pet_video_results';
           const queueLength = await redis.lLen(resultQueue);
           
           if (queueLength && typeof queueLength === 'number' && queueLength > 0) {

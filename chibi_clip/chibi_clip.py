@@ -9,85 +9,88 @@ import tempfile
 import numpy as np
 from PIL import Image
 # Import specific modules from moviepy
-from moviepy.video.io.VideoFileClip import VideoFileClip
-from moviepy.audio.io.AudioFileClip import AudioFileClip
-from moviepy.video.compositing.concatenate import concatenate_videoclips
-from moviepy.audio.AudioClip import AudioClip
-from moviepy.audio.AudioClip import concatenate_audioclips  # Add proper import for audio concatenation
-from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip # Ensure this is imported
-from moviepy.video.VideoClip import ImageClip, TextClip # Import ImageClip and TextClip
+from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips, concatenate_audioclips, CompositeVideoClip, ImageClip, TextClip
 # Import resize with fallback for newer PIL versions
 try:
-    from moviepy.video.fx.resize import resize
-except Exception as e:
-    # Create a custom resize function that works with newer PIL versions
-    def resize(clip, width=None, height=None, newsize=None):
-        """
-        Resizes a clip to a new resolution.
-        
-        Parameters
-        ----------
-        clip : VideoClip
-            A video clip
-        width : int, optional
-            New width of the clip
-        height : int, optional
-            New height of the clip
-        newsize : tuple, optional
-            New size (width, height) of the clip
-            
-        Returns
-        -------
-        clip : VideoClip
-            A clip with the new resolution
-        """
-        from moviepy.video.fx.resize import resize_func
-        from PIL import Image
-        
-        if newsize is not None:
-            width, height = newsize
-        elif width is not None:
-            if height is None:
-                height = int(clip.h * width / clip.w)
-        elif height is not None:
-            if width is None:
-                width = int(clip.w * height / clip.h)
-        else:
-            return clip  # No resizing needed
-            
-        newsize = (width, height)
-        
-        # Get the proper resampling filter
-        resample_filter = None
-        # Check which PIL/Pillow constants are available
-        if hasattr(Image, 'LANCZOS'):
-            resample_filter = Image.LANCZOS
-        elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'LANCZOS'):
-            resample_filter = Image.Resampling.LANCZOS
-        elif hasattr(Image, 'ANTIALIAS'):
-            resample_filter = Image.ANTIALIAS
-        else:
-            # Fallback to BICUBIC
-            if hasattr(Image, 'BICUBIC'):
-                resample_filter = Image.BICUBIC
-            elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'BICUBIC'):
-                resample_filter = Image.Resampling.BICUBIC
+    from moviepy.vfx import resize
+except ImportError:
+    try:
+        from moviepy.video.fx import resize
+    except ImportError:
+        try:
+            from moviepy.video.fx.resize import resize
+        except Exception as e:
+            # Create a custom resize function that works with newer PIL versions
+            def resize(clip, width=None, height=None, newsize=None):
+                """
+                Resizes a clip to a new resolution.
                 
-        # Custom resize function that uses the determined resampling filter
-        def resizer(pic, newsize):
-            newpic = Image.fromarray(pic)
-            newpic = newpic.resize(newsize[::-1], resample_filter)
-            return np.array(newpic)
-            
-        # Apply the resize
-        newclip = clip.fl_image(lambda pic: resizer(pic.astype('uint8'), newsize))
-        
-        if hasattr(clip, 'fps'):
-            newclip.fps = clip.fps
-        if hasattr(clip, 'audio'):
-            newclip.audio = clip.audio
-            
-        return newclip
+                Parameters
+                ----------
+                clip : VideoClip
+                    A video clip
+                width : int, optional
+                    New width of the clip
+                height : int, optional
+                    New height of the clip
+                newsize : tuple, optional
+                    New size (width, height) of the clip
+                
+                Returns
+                -------
+                clip : VideoClip
+                    A clip with the new resolution
+                """
+                try:
+                    from moviepy.video.fx import resize_func
+                except ImportError:
+                    from moviepy.video.fx.resize import resize_func
+                from PIL import Image
+                
+                if newsize is not None:
+                    width, height = newsize
+                elif width is not None:
+                    if height is None:
+                        height = int(clip.h * width / clip.w)
+                elif height is not None:
+                    if width is None:
+                        width = int(clip.w * height / clip.h)
+                else:
+                    return clip  # No resizing needed
+                
+                newsize = (width, height)
+                
+                # Get the proper resampling filter
+                resample_filter = None
+                # Check which PIL/Pillow constants are available
+                if hasattr(Image, 'LANCZOS'):
+                    resample_filter = Image.LANCZOS
+                elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'LANCZOS'):
+                    resample_filter = Image.Resampling.LANCZOS
+                elif hasattr(Image, 'ANTIALIAS'):
+                    resample_filter = Image.ANTIALIAS
+                else:
+                    # Fallback to BICUBIC
+                    if hasattr(Image, 'BICUBIC'):
+                        resample_filter = Image.BICUBIC
+                    elif hasattr(Image, 'Resampling') and hasattr(Image.Resampling, 'BICUBIC'):
+                        resample_filter = Image.Resampling.BICUBIC
+                
+                # Custom resize function that uses the determined resampling filter
+                def resizer(pic, newsize):
+                    newpic = Image.fromarray(pic)
+                    newpic = newpic.resize(newsize[::-1], resample_filter)
+                    return np.array(newpic)
+                
+                # Apply the resize
+                newclip = clip.fl_image(lambda pic: resizer(pic.astype('uint8'), newsize))
+                
+                if hasattr(clip, 'fps'):
+                    newclip.fps = clip.fps
+                if hasattr(clip, 'audio'):
+                    newclip.audio = clip.audio
+                
+                return newclip
 
 # Import these directly from the moviepy package
 import moviepy
@@ -186,18 +189,15 @@ class ChibiClipGenerator:
             raise RuntimeError(error_message) from e
                 
     # Step 3: Prompt generator
-    def generate_ai_prompt(self, action="running"):
-        if action == "birthday-dance":
-            base = ("Charming vector illustration of a chibi‑style dog with flat pastel colors, "
-                    "bold black outlines, subtle cel‑shading and soft shadows, centered on a clean "
-                    "light‑beige background with a faint oval ground shadow, minimalistic and playful. "
-                    "The dog is wearing a colorful party hat and has a happy celebratory expression.")
-            prompt = f"{base} The dog is dancing joyfully for a birthday celebration."
-        else:
-            base = ("Charming vector illustration of a chibi‑style dog with flat pastel colors, "
-                    "bold black outlines, subtle cel‑shading and soft shadows, centered on a clean "
-                    "light‑beige background with a faint oval ground shadow, minimalistic and playful.")
-            prompt = f"{base} The dog is {action} in place."
+    def generate_ai_prompt(self, action="sitting peacefully"):
+        # Studio Ghibli style prompt for any custom action - flat colors and bold outlines like the reference image
+        base = ("Charming Studio Ghibli style illustration of a pet with flat pastel colors, "
+                "bold black outlines, subtle cel-shading and natural soft shadows, "
+                "whimsical and enchanting art style, centered on a magical nature background "
+                "that matches the scene, minimalistic and playful design, "
+                "hand-drawn animation aesthetic, peaceful and serene mood.")
+        
+        prompt = f"{base} The pet is {action}."
         
         if self.verbose:
             print(f"Generated AI prompt for OpenAI: '{prompt}'")
@@ -490,15 +490,11 @@ class ChibiClipGenerator:
             "Content-Type": "application/json",
         }
         
-        # Customize the prompt text based on the action
-        if action == "birthday-dance":
-            prompt_text = ("Seamless looped 2D animation of a chibi‑style puppy dancing happily with a birthday hat — "
-                          "smooth, bouncy dance movements, joyful expression, flat pastel colours, "
-                          "bold black outlines, subtle cel‑shading, clean light‑beige background, confetti falling, no cuts.")
-        else:
-            prompt_text = (f"Seamless looped 2D animation of a chibi‑style puppy {action} in place — "
-                           "flat pastel colours, bold black outlines, smooth limb and ear motion, "
-                           "subtle cel‑shading, clean light‑beige background, no cuts.")
+        # Customize the prompt text for Studio Ghibli style animation
+        prompt_text = (f"Seamless looped Studio Ghibli style animation of a pet {action} — "
+                      "flat pastel colors, bold black outlines, smooth natural motion, "
+                      "subtle cel-shading, magical and whimsical background that matches the scene, "
+                      "minimalistic Studio Ghibli-inspired style, continuous playful motion without cuts or zooms.")
         
         payload = {
             "promptImage": img_url,
@@ -1100,27 +1096,11 @@ class ChibiClipGenerator:
                 if self.verbose: print(f"   Warning: Error removing temp directory: {e}")
 
     # Step 7: High-level orchestrator (Updated to handle local file URLs)
-    def process_clip(self, photo_path: str, action: str = "running", ratio: str = "9:16", duration: int = 5, audio_path: str = None, extended_duration: int = 45, use_local_storage=False, birthday_message=None):
+    def process_clip(self, photo_path: str, action: str = "sitting peacefully", ratio: str = "9:16", duration: int = 5, audio_path: str = None, extended_duration: int = 45, use_local_storage=False, custom_message=None):
         if self.verbose:
-            print(f"▶ Generating clip (source: {photo_path}, action: {action}, ratio: {ratio}, duration: {duration}s)…")
-            if birthday_message:
-                print(f"  With birthday message: {birthday_message}")
-
-        # For birthday-dance action, force local storage and use birthday song
-        if action == "birthday-dance":
-            use_local_storage = True
-            # Set default audio path to birthday_song.mp3 if not specified
-            if audio_path is None:
-                # Look for birthday_song.mp3 in the project root
-                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                default_audio_path = os.path.join(project_root, "birthday_song.mp3")
-                if os.path.exists(default_audio_path):
-                    audio_path = default_audio_path
-                    if self.verbose:
-                        print(f"Birthday theme selected: Using default birthday song: {audio_path}")
-                else:
-                    if self.verbose:
-                        print("Birthday song not found at expected location. Will generate video without audio.")
+            print(f"▶ Generating pet reel (source: {photo_path}, action: {action}, ratio: {ratio}, duration: {duration}s)…")
+            if custom_message:
+                print(f"  With custom message: {custom_message}")
 
         try:
             prompt = self.generate_ai_prompt(action)
@@ -1161,39 +1141,32 @@ class ChibiClipGenerator:
             
             video_url = task_result["output"][0]
             
-            # For birthday-dance or when audio_path is provided, add music to the video
+            # Add music to the video if audio_path is provided
             local_video_path = None
-            if action == "birthday-dance" or (audio_path and os.path.exists(audio_path)):
+            if audio_path and os.path.exists(audio_path):
                 if self.verbose:
-                    if action == "birthday-dance":
-                        print(f"Adding birthday music from {audio_path} to video")
-                    else:
-                        print(f"Adding music from {audio_path} to video")
+                    print(f"Adding music from {audio_path} to video")
                 
-                # For birthday theme, use the Output directory with a descriptive name
-                if action == "birthday-dance":
-                    timestamp = int(time.time())
-                    output_filename = f"birthday_dog_video_{timestamp}.mp4"
-                    output_path = os.path.join(self.output_dir, output_filename)
-                else:
-                    output_path = None  # Default naming will be used
+                # Create descriptive filename for pet reel
+                timestamp = int(time.time())
+                output_filename = f"pet_reel_{timestamp}.mp4"
+                output_path = os.path.join(self.output_dir, output_filename)
                 
-                # Add music and loop the video to the extended duration (default 45 seconds)
+                # Add music and loop the video to the extended duration
                 local_video_path = self.add_music_to_video(
                     video_url, 
                     audio_path, 
                     output_path=output_path, 
                     total_duration=extended_duration,
-                    birthday_message=birthday_message
+                    birthday_message=custom_message
                 )
             else:
-                # For non-birthday themes without audio, download and save the video locally 
-                # if using local storage
+                # Download and save the video locally if using local storage
                 if use_local_storage:
                     try:
                         # Create a filename and path for the video
                         timestamp = int(time.time())
-                        output_filename = f"dog_video_{timestamp}.mp4"
+                        output_filename = f"pet_reel_{timestamp}.mp4"
                         local_video_path = os.path.join(self.output_dir, output_filename)
                         
                         if self.verbose:
@@ -1213,15 +1186,15 @@ class ChibiClipGenerator:
                 result["local_image_path"] = local_image_path
             if local_video_path:
                 result["local_video_path"] = local_video_path
-                if action == "birthday-dance" or audio_path:
+                if audio_path:
                     result["extended_duration"] = extended_duration
             
             if self.verbose:
-                print(f"✅ Clip processing complete. Image: {img_url}, Video: {video_url}")
+                print(f"✅ Pet reel processing complete. Image: {img_url}, Video: {video_url}")
                 if local_image_path:
                     print(f"Local image saved to: {local_image_path}")
                 if local_video_path:
-                    if action == "birthday-dance" or audio_path:
+                    if audio_path:
                         print(f"Extended video with music ({extended_duration}s) saved to: {local_video_path}")
                     else:
                         print(f"Video saved to: {local_video_path}")
@@ -1269,31 +1242,22 @@ if __name__ == "__main__":
     except ImportError:
         if os.getenv("VERBOSE_DOTENV") == 'true': print("python-dotenv not installed. Skipping .env file loading.")
 
-    ap = argparse.ArgumentParser(description="ChibiClip Generator: Create animated video clips from photos.")
-    ap.add_argument("photo", help="Path to the input photo of the dog.")
-    ap.add_argument("--action", default="running", 
-                    choices=["running", "tail-wagging", "jumping", "birthday-dance"], 
-                    help="Action the dog should perform in the animation. Note: 'birthday-dance' option automatically uses local storage and adds birthday music.")
+    ap = argparse.ArgumentParser(description="Pet Reel Generator: Create animated video clips from pet photos.")
+    ap.add_argument("photo", help="Path to the input photo of the pet.")
+    ap.add_argument("--action", default="sitting peacefully", 
+                    help="What the pet should be doing in the reel (e.g., 'running through a field', 'playing with a ball', 'sleeping under a tree').")
     ap.add_argument("--ratio", default="9:16", choices=["9:16", "16:9", "1:1"],
                     help="Aspect ratio for the output video.")
     ap.add_argument("--duration", default=5, type=int, choices=[5, 10],
                     help="Duration of the video in seconds (5 or 10).")
-    ap.add_argument("--audio", help="Path to an audio file to add to the video. Not needed for birthday-dance as it uses the default birthday song.")
+    ap.add_argument("--audio", help="Path to an audio file to add to the video.")
     ap.add_argument("--extended-duration", type=int, default=45,
                     help="Total duration in seconds for the extended video with music (default: 45)")
     ap.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     ap.add_argument("--use-local-storage", action="store_true",
-                    help="Save images locally instead of uploading to ImgBB. Auto-enabled for birthday-dance.")
+                    help="Save images locally instead of uploading to ImgBB.")
     ap.add_argument("--output-dir", help="Directory to save locally stored images and videos")
     args = ap.parse_args()
-
-    # Print a special message for birthday theme
-    if args.action == "birthday-dance":
-        print("🎂 Birthday theme selected! 🎂")
-        print("- Will create a dancing dog with a party hat")
-        print("- Will automatically use local storage")
-        print("- Will add birthday music and loop to 45 seconds")
-        print("- Output will be saved to the Output directory\n")
 
     try:
         gen = ChibiClipGenerator(
@@ -1314,7 +1278,7 @@ if __name__ == "__main__":
             use_local_storage=args.use_local_storage
         )
         
-        print("\n✨ Clip Generation Result ✨") 
+        print("\n✨ Pet Reel Generation Result ✨") 
         print(json.dumps(res, indent=2, ensure_ascii=False))
 
         if res.get("video_url"):
@@ -1324,7 +1288,7 @@ if __name__ == "__main__":
         if res.get("local_image_path"):
             print(f"Local image saved to: {res['local_image_path']}")
         if res.get("local_video_path"):
-            if args.action == "birthday-dance" or args.audio:
+            if args.audio:
                 print(f"Extended video with music ({res.get('extended_duration', 45)}s) saved to: {res['local_video_path']}")
             else:
                 print(f"Video saved to: {res['local_video_path']}")

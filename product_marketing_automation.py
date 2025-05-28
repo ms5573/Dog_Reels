@@ -14,6 +14,10 @@ import redis
 import sys
 import traceback
 import logging # Import standard logging
+from dotenv import load_dotenv
+
+# Load environment variables from .env files
+load_dotenv()
 
 # Attempt to import ChibiClipGenerator
 try:
@@ -111,13 +115,17 @@ class ProductMarketingAutomation:
 
     def generate_ai_prompt(self, product_title, product_description):
         """
-        Generate creative prompt using OpenAI - now returns a fixed style prompt.
+        Generate creative prompt using OpenAI that incorporates the user's description.
         """
-        print(f"Generating fixed style AI prompt (product: {product_title})") 
-        style_prompt = "Charming vector illustration of a chibi-style dog with flat pastel, bold black outlines, subtle cel-shading and natural soft shadows, centered on a clean light-beige background with a faint oval ground shadow, minimalistic and playful design."
+        print(f"Generating AI prompt for product: {product_title} with description: {product_description}")
+        
+        # Create a dynamic prompt that incorporates the user's description
+        style_prompt = f"Charming vector illustration of a chibi-style dog {product_description}, with flat pastel colors, bold black outlines, subtle cel-shading and natural soft shadows, magical and whimsical background that matches the scene, minimalistic and playful Studio Ghibli-inspired design."
+        
+        print(f"Generated prompt: {style_prompt}")
         return style_prompt
 
-    def upload_to_cloudinary(self, local_video_path, public_id=None, folder="dog_reels_videos"):
+    def upload_to_cloudinary(self, local_video_path, public_id=None, folder="pet_reels_videos"):
         if not self.cloudinary_enabled:
             print("Cloudinary is not enabled. Skipping upload.")
             return None
@@ -210,24 +218,46 @@ class ProductMarketingAutomation:
             # Decide if this should raise or return None
             return None 
     
-    def generate_runway_video(self, image_url):
+    def check_content_policy(self, description):
         """
-        Generate video from image using Runway API
+        Check if content contains celebrities or other blocked content
         """
-        print("Generating video with Runway")
+        blocked_terms = [
+            'elon musk', 'trump', 'biden', 'obama', 'celebrity', 'famous person',
+            'politician', 'president', 'ceo', 'billionaire', 'taylor swift',
+            'kanye', 'kardashian', 'bezos', 'gates', 'zuckerberg'
+        ]
+        
+        description_lower = description.lower()
+        for term in blocked_terms:
+            if term in description_lower:
+                return False, f"Content policy violation: '{term}' detected. Celebrity and public figure content is not allowed."
+        
+        return True, "Content approved"
+
+    def generate_runway_video(self, image_url, product_description="running in place"):
+        """
+        Generate video from image using Runway API with dynamic prompt based on description
+        """
+        print(f"Generating video with Runway using description: {product_description}")
         headers = {
             "Authorization": f"Bearer {self.runway_api_key}",
             "X-Runway-Version": "2024-11-06", # Check if this version is current
             "Content-Type": "application/json"
         }
         
+        # Create dynamic prompt text based on the product description
+        dynamic_prompt = f"Seamless looped 2D animation of a chibi-style dog {product_description}, with flat pastel colors, bold black outlines, smooth natural motion, subtle cel-shading, magical and whimsical background that matches the scene, minimalistic Studio Ghibli-inspired style, continuous playful motion without cuts or zooms."
+        
         payload = {
             "promptImage": image_url,
             "model": "gen4_turbo", # Check if this model is current
-            "promptText": "Seamless looped 2D animation of the chibi-style spaniel-mix puppy running in place—flat pastel orange and cream fur with bold black outlines, teal collar, smooth leg and ear motion, subtle cel-shading, on a clean light-beige background with a soft oval ground shadow, minimalistic children's storybook style, continuous playful motion without cuts or zooms.",
+            "promptText": dynamic_prompt,
             "duration": 5,
             "ratio": "960:960" # Consider if this ratio is always desired
         }
+        
+        print(f"Runway prompt: {dynamic_prompt}")
         
         try:
             response = requests.post("https://api.dev.runwayml.com/v1/image_to_video", headers=headers, json=payload)
@@ -323,12 +353,12 @@ class ProductMarketingAutomation:
             html_content = f"""
             <html>
                 <head>
-                    <title>Your Dog Birthday Card is Ready!</title>
+                    <title>Your Pet Reel is Ready!</title>
                 </head>
                 <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
                     <div style="text-align: center; background-color: #f9f0ff; padding: 20px; border-radius: 10px;">
-                        <h1 style="color: #8a2be2;">Your Dog Birthday Card is Ready! 🎉</h1>
-                        <p style="font-size: 16px; line-height: 1.5;">We've created a special birthday video for your dog!</p>
+                        <h1 style="color: #8a2be2;">Your Pet Reel is Ready! ✨</h1>
+                        <p style="font-size: 16px; line-height: 1.5;">We've created a magical Studio Ghibli-style video of your pet!</p>
                         
                         <div style="margin: 25px 0;">
                             <a href="{cloudinary_video_url}" style="background-color: #8a2be2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;">Watch Your Video</a>
@@ -337,7 +367,7 @@ class ProductMarketingAutomation:
                         <p style="font-size: 14px; color: #666;">The link will be available for 7 days. Don't forget to download your video!</p>
                         
                         <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #888;">
-                            <p>Thank you for using our Dog Birthday Card Generator!</p>
+                            <p>Thank you for using our Pet Reel Generator!</p>
                         </div>
                     </div>
                 </body>
@@ -347,7 +377,7 @@ class ProductMarketingAutomation:
             message = Mail(
                 from_email='puparazee@gmail.com',
                 to_emails=to_email,
-                subject=f'Your Dog Birthday Card is Ready! 🎂🐶',
+                subject=f'Your Pet Reel is Ready! 🐾✨',
                 html_content=html_content
             )
             
@@ -355,6 +385,13 @@ class ProductMarketingAutomation:
             response = sg.send(message)
             
             print(f"Email sent successfully! Status code: {response.status_code}")
+            
+            # Check for potential delivery issues
+            if response.status_code == 202:
+                print("✅ Email accepted by SendGrid")
+                print("⚠️  Note: If emails aren't being delivered, check that 'puparazee@gmail.com' is verified in your SendGrid account")
+                print("   Go to SendGrid → Settings → Sender Authentication → Verify Single Sender")
+            
             return True
         except Exception as e:
             print(f"Error sending email: {e}")
@@ -414,32 +451,53 @@ class ProductMarketingAutomation:
 
             # Use CHIBI_GENERATOR_AVAILABLE (module-level import check) 
             # AND self.chibi_generator_initialized_successfully (instance-level init check)
-            if CHIBI_GENERATOR_AVAILABLE and self.chibi_generator_initialized_successfully and product_title == "Dog Birthday Card":
-                logger.info("Using ChibiClipGenerator for Dog Birthday Card.")
+            if CHIBI_GENERATOR_AVAILABLE and self.chibi_generator_initialized_successfully and product_title == "Pet Reel":
+                logger.info("Using ChibiClipGenerator for Pet Reel.")
                 
                 chibi_result = self.chibi_generator.process_clip(
                     photo_path=current_image_path,
-                    action="birthday-dance",
-                    birthday_message=product_description,
+                    action=product_description,  # Use the custom action description
+                    custom_message=None,
+                    use_local_storage=True  # Ensure we get a local_video_path
                 )
                 
-                if not chibi_result or not chibi_result.get('local_video_path'):
-                    raise Exception("ChibiClipGenerator did not return the 'local_video_path'.")
+                # Handle both local_video_path and video_url cases
+                if chibi_result and chibi_result.get('local_video_path'):
+                    final_video_local_path = chibi_result['local_video_path']
+                    logger.info(f"ChibiClipGenerator returned local video path: {final_video_local_path}")
+                elif chibi_result and chibi_result.get('video_url'):
+                    # Download the video from the URL to a local path
+                    logger.info(f"ChibiClipGenerator returned video URL, downloading: {chibi_result['video_url']}")
+                    video_response = requests.get(chibi_result['video_url'], stream=True)
+                    video_response.raise_for_status()
+                    
+                    temp_chibi_video_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", dir=self.output_dir_worker or None)
+                    final_video_local_path = temp_chibi_video_file.name
+                    with open(final_video_local_path, 'wb') as f_video:
+                        for chunk in video_response.iter_content(chunk_size=8192):
+                            f_video.write(chunk)
+                    logger.info(f"ChibiClipGenerator video downloaded to: {final_video_local_path}")
+                else:
+                    raise Exception("ChibiClipGenerator did not return a valid 'local_video_path' or 'video_url'.")
                 
-                final_video_local_path = chibi_result['local_video_path']
                 results["chibi_generator_result"] = chibi_result
                 logger.info(f"ChibiClipGenerator processing complete. Final video at: {final_video_local_path}")
 
             else:
                 logger.info("Using generic product marketing video flow.")
-                if not (CHIBI_GENERATOR_AVAILABLE and self.chibi_generator_initialized_successfully) and product_title == "Dog Birthday Card":
-                    logger.warning("ChibiClipGenerator import or initialization failed. 'Dog Birthday Card' will be processed with generic flow.")
-                elif not CHIBI_GENERATOR_AVAILABLE and product_title == "Dog Birthday Card":
-                    logger.warning("ChibiClipGenerator module not imported. 'Dog Birthday Card' will be generic.")
-                elif not self.chibi_generator_initialized_successfully and product_title == "Dog Birthday Card":
-                    logger.warning("ChibiClipGenerator instance not initialized. 'Dog Birthday Card' will be generic.")
+                if not (CHIBI_GENERATOR_AVAILABLE and self.chibi_generator_initialized_successfully) and product_title == "Pet Reel":
+                    logger.warning("ChibiClipGenerator import or initialization failed. 'Pet Reel' will be processed with generic flow.")
+                elif not CHIBI_GENERATOR_AVAILABLE and product_title == "Pet Reel":
+                    logger.warning("ChibiClipGenerator module not imported. 'Pet Reel' will be generic.")
+                elif not self.chibi_generator_initialized_successfully and product_title == "Pet Reel":
+                    logger.warning("ChibiClipGenerator instance not initialized. 'Pet Reel' will be generic.")
 
                 # Generic Flow (Original logic)
+                # Check content policy before processing
+                policy_ok, policy_message = self.check_content_policy(product_description)
+                if not policy_ok:
+                    raise Exception(f"Content blocked: {policy_message}")
+                
                 ai_prompt = self.generate_ai_prompt(product_title, product_description)
                 results["ai_prompt"] = ai_prompt
                 logger.info(f"Generated AI editing prompt: {ai_prompt[:100]}...")
@@ -460,7 +518,7 @@ class ProductMarketingAutomation:
                     raise Exception("Failed to get image URL from ImgBB for Runway input in generic flow.")
                 results["imgbb_image_url"] = img_url_for_runway
                 
-                runway_task_id = self.generate_runway_video(img_url_for_runway)
+                runway_task_id = self.generate_runway_video(img_url_for_runway, product_description)
                 runway_video_result = self.wait_for_runway_video(runway_task_id)
                 runway_output_video_url = runway_video_result["output"][0]
                 results["runway_video_download_url"] = runway_output_video_url
@@ -510,7 +568,7 @@ class ProductMarketingAutomation:
             # Clean up the final local video (generic flow only, ChibiGenerator manages its own output dir)
             # ChibiGenerator output is in self.output_dir_worker which is cleaned up when the worker instance is done if we add a __del__ or similar
             # For generic flow, the temp_generic_video_file is created directly
-            if final_video_local_path and os.path.exists(final_video_local_path) and product_title != "Dog Birthday Card":
+            if final_video_local_path and os.path.exists(final_video_local_path) and product_title != "Pet Reel":
                  try:
                     os.remove(final_video_local_path)
                     logger.info(f"Cleaned up temporary generic flow video: {final_video_local_path}")
@@ -538,11 +596,15 @@ class ProductMarketingAutomation:
         
         r = None # Initialize r before try block
         try:
-            r = redis.from_url(redis_url, ssl_cert_reqs=None)
+            # Fix Redis connection for local development
+            if redis_url.startswith('redis://localhost') or redis_url.startswith('redis://127.0.0.1'):
+                r = redis.Redis(host='localhost', port=6379, db=0)
+            else:
+                r = redis.from_url(redis_url)
             logger.info(f"Connected to Redis at {redis_url}") # Changed print to logger.info
             
-            task_queue = 'dog_video_tasks'
-            result_queue = 'dog_video_results'
+            task_queue = 'pet_video_tasks'
+            result_queue = 'pet_video_results'
             
             logger.info(f"Listening for tasks on queue: {task_queue}") # Changed print to logger.info
             
@@ -561,8 +623,8 @@ class ProductMarketingAutomation:
                     task_id = task.get('task_id')
                     task_id_for_error = task_id or 'unknown' # Update for specific error reporting
                     photo_url = task.get('photo_url') # Expecting a URL (Cloudinary or other)
-                    title = task.get('product_title', 'Dog Birthday Card')
-                    description = task.get('product_description', 'A cute dog birthday card')
+                    title = task.get('product_title', 'Pet Reel')
+                    description = task.get('product_description', 'A cute pet reel')
                     # email = task.get('email') # Email sending handled by ChibiGenerator or process_product
                     user_email = task.get('user_email') # Ensure this matches what server sends if needed
                     

@@ -596,11 +596,18 @@ class ProductMarketingAutomation:
         
         r = None # Initialize r before try block
         try:
-            # Fix Redis connection for local development
+            # Fix Redis connection for both local development and production
             if redis_url.startswith('redis://localhost') or redis_url.startswith('redis://127.0.0.1'):
+                # Local development - no SSL
                 r = redis.Redis(host='localhost', port=6379, db=0)
             else:
-                r = redis.from_url(redis_url)
+                # Production - handle SSL properly
+                if redis_url.startswith('rediss://'):
+                    # SSL Redis connection for production
+                    r = redis.from_url(redis_url, ssl_cert_reqs=None)
+                else:
+                    # Non-SSL Redis connection
+                    r = redis.from_url(redis_url)
             logger.info(f"Connected to Redis at {redis_url}") # Changed print to logger.info
             
             task_queue = 'pet_video_tasks'

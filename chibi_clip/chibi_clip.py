@@ -190,18 +190,87 @@ class ChibiClipGenerator:
                 
     # Step 3: Prompt generator
     def generate_ai_prompt(self, action="sitting peacefully"):
+        # Extract environment context from the action description
+        environment = self._extract_environment_from_action(action)
+        
         # Studio Ghibli style prompt for any custom action - flat colors and bold outlines like the reference image
         base = ("Charming Studio Ghibli style illustration of a pet with flat pastel colors, "
                 "bold black outlines, subtle cel-shading and natural soft shadows, "
-                "whimsical and enchanting art style, centered on a magical nature background "
-                "that matches the scene, minimalistic and playful design, "
-                "hand-drawn animation aesthetic, peaceful and serene mood.")
+                "whimsical and enchanting art style, centered on a ")
         
-        prompt = f"{base} The pet is {action}."
+        # Add the contextual background based on the action
+        background_desc = f"{environment} background that perfectly matches the scene"
+        
+        style_ending = (", minimalistic and playful design, "
+                       "hand-drawn animation aesthetic, peaceful and serene mood.")
+        
+        prompt = f"{base}{background_desc}{style_ending} The pet is {action}."
         
         if self.verbose:
             print(f"Generated AI prompt for OpenAI: '{prompt}'")
         return prompt
+
+    def _extract_environment_from_action(self, action):
+        """
+        Extract environment context from the user's action description.
+        Returns appropriate background description based on keywords in the action.
+        """
+        action_lower = action.lower()
+        
+        # Gym/fitness environments
+        if any(word in action_lower for word in ['gym', 'workout', 'exercise', 'lifting', 'treadmill', 'fitness', 'training']):
+            return "modern gym"
+        
+        # Kitchen/cooking environments
+        if any(word in action_lower for word in ['cooking', 'kitchen', 'baking', 'chef', 'recipe', 'food']):
+            return "cozy kitchen"
+        
+        # Office/work environments
+        if any(word in action_lower for word in ['office', 'work', 'computer', 'desk', 'meeting', 'typing']):
+            return "modern office"
+        
+        # Beach/ocean environments
+        if any(word in action_lower for word in ['beach', 'ocean', 'sand', 'surfing', 'swimming', 'seaside']):
+            return "sunny beach"
+        
+        # City/urban environments
+        if any(word in action_lower for word in ['city', 'street', 'urban', 'building', 'downtown', 'sidewalk']):
+            return "vibrant city"
+        
+        # Space/cosmic environments
+        if any(word in action_lower for word in ['space', 'rocket', 'astronaut', 'planet', 'stars', 'cosmic']):
+            return "magical space"
+        
+        # Garden/park environments
+        if any(word in action_lower for word in ['garden', 'park', 'flowers', 'gardening', 'plants']):
+            return "beautiful garden"
+        
+        # Home/indoor environments
+        if any(word in action_lower for word in ['home', 'house', 'living room', 'bedroom', 'sofa', 'couch']):
+            return "cozy home"
+        
+        # Winter/snow environments
+        if any(word in action_lower for word in ['snow', 'winter', 'skiing', 'snowball', 'cold', 'ice']):
+            return "snowy winter wonderland"
+        
+        # Magical/fantasy environments
+        if any(word in action_lower for word in ['magic', 'wizard', 'fairy', 'castle', 'enchanted', 'spell']):
+            return "enchanted magical realm"
+        
+        # Dance/performance environments
+        if any(word in action_lower for word in ['dance', 'stage', 'performance', 'theater', 'ballet']):
+            return "elegant dance studio"
+        
+        # School/classroom environments
+        if any(word in action_lower for word in ['school', 'classroom', 'studying', 'learning', 'teacher']):
+            return "bright classroom"
+        
+        # Hospital/medical environments
+        if any(word in action_lower for word in ['doctor', 'hospital', 'medical', 'nurse', 'clinic']):
+            return "clean medical facility"
+        
+        # Default to nature for general or unclear actions
+        return "magical nature"
 
     # Helper method to preprocess image for OpenAI
     def _preprocess_image_for_openai(self, image_content: BytesIO, max_size_mb=3.5) -> BytesIO:
@@ -490,10 +559,13 @@ class ChibiClipGenerator:
             "Content-Type": "application/json",
         }
         
-        # Customize the prompt text for Studio Ghibli style animation
+        # Extract environment context from the action to match the OpenAI prompt
+        environment = self._extract_environment_from_action(action)
+        
+        # Customize the prompt text for Studio Ghibli style animation with contextual background
         prompt_text = (f"Seamless looped Studio Ghibli style animation of a pet {action} — "
                       "flat pastel colors, bold black outlines, smooth natural motion, "
-                      "subtle cel-shading, magical and whimsical background that matches the scene, "
+                      f"subtle cel-shading, {environment} background that perfectly matches the scene, "
                       "minimalistic Studio Ghibli-inspired style, continuous playful motion without cuts or zooms.")
         
         payload = {

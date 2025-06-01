@@ -8,4 +8,4 @@ if (!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY) {
 export const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY)
 
 // Payment amount for display (in dollars)
-export const PAYMENT_AMOUNT_DOLLARS = (parseInt(process.env.PAYMENT_AMOUNT || '499') / 100).toFixed(2) 
+export const PAYMENT_AMOUNT_DOLLARS = (parseInt(process.env.PAYMENT_AMOUNT || '199') / 100).toFixed(2) 

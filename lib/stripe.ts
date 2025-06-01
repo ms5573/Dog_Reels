@@ -11,4 +11,4 @@ export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 })
 
 // Payment amount in cents
-export const PAYMENT_AMOUNT = parseInt(process.env.PAYMENT_AMOUNT || '499') // Default $4.99 
+export const PAYMENT_AMOUNT = parseInt(process.env.PAYMENT_AMOUNT || '199') // Default $1.99 

@@ -246,8 +246,11 @@ class ProductMarketingAutomation:
             "Content-Type": "application/json"
         }
         
-        # Create dynamic prompt text based on the product description
-        dynamic_prompt = f"Seamless looped 2D animation of a chibi-style dog {product_description}, with flat pastel colors, bold black outlines, smooth natural motion, subtle cel-shading, magical and whimsical background that matches the scene, minimalistic Studio Ghibli-inspired style, continuous playful motion without cuts or zooms."
+        # Extract environment context from the action description
+        environment = self._extract_environment_from_action(product_description)
+        
+        # Create dynamic prompt text based on the product description with contextual background
+        dynamic_prompt = f"Seamless looped 2D animation of a chibi-style dog {product_description}, with flat pastel colors, bold black outlines, smooth natural motion, subtle cel-shading, {environment} background that perfectly matches the scene, minimalistic Studio Ghibli-inspired style, continuous playful motion without cuts or zooms."
         
         payload = {
             "promptImage": image_url,
@@ -271,6 +274,68 @@ class ProductMarketingAutomation:
                 print(f"Response error: {e.response.text}")
             raise
     
+    def _extract_environment_from_action(self, action):
+        """
+        Extract environment context from the user's action description.
+        Returns appropriate background description based on keywords in the action.
+        """
+        action_lower = action.lower()
+        
+        # Gym/fitness environments
+        if any(word in action_lower for word in ['gym', 'workout', 'exercise', 'lifting', 'treadmill', 'fitness', 'training']):
+            return "modern gym"
+        
+        # Kitchen/cooking environments
+        if any(word in action_lower for word in ['cooking', 'kitchen', 'baking', 'chef', 'recipe', 'food']):
+            return "cozy kitchen"
+        
+        # Office/work environments
+        if any(word in action_lower for word in ['office', 'work', 'computer', 'desk', 'meeting', 'typing']):
+            return "modern office"
+        
+        # Beach/ocean environments
+        if any(word in action_lower for word in ['beach', 'ocean', 'sand', 'surfing', 'swimming', 'seaside']):
+            return "sunny beach"
+        
+        # City/urban environments
+        if any(word in action_lower for word in ['city', 'street', 'urban', 'building', 'downtown', 'sidewalk']):
+            return "vibrant city"
+        
+        # Space/cosmic environments
+        if any(word in action_lower for word in ['space', 'rocket', 'astronaut', 'planet', 'stars', 'cosmic']):
+            return "magical space"
+        
+        # Garden/park environments
+        if any(word in action_lower for word in ['garden', 'park', 'flowers', 'gardening', 'plants']):
+            return "beautiful garden"
+        
+        # Home/indoor environments
+        if any(word in action_lower for word in ['home', 'house', 'living room', 'bedroom', 'sofa', 'couch']):
+            return "cozy home"
+        
+        # Winter/snow environments
+        if any(word in action_lower for word in ['snow', 'winter', 'skiing', 'snowball', 'cold', 'ice']):
+            return "snowy winter wonderland"
+        
+        # Magical/fantasy environments
+        if any(word in action_lower for word in ['magic', 'wizard', 'fairy', 'castle', 'enchanted', 'spell']):
+            return "enchanted magical realm"
+        
+        # Dance/performance environments
+        if any(word in action_lower for word in ['dance', 'stage', 'performance', 'theater', 'ballet']):
+            return "elegant dance studio"
+        
+        # School/classroom environments
+        if any(word in action_lower for word in ['school', 'classroom', 'studying', 'learning', 'teacher']):
+            return "bright classroom"
+        
+        # Hospital/medical environments
+        if any(word in action_lower for word in ['doctor', 'hospital', 'medical', 'nurse', 'clinic']):
+            return "clean medical facility"
+        
+        # Default to nature for general or unclear actions
+        return "magical nature"
+
     def check_runway_task_status(self, task_id):
         """
         Check status of Runway video generation task
